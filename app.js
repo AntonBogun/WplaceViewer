@@ -16,9 +16,407 @@ const WORLD_MIN = { x: -180, y: -85.05112878 }; // Web Mercator bounds
 const WORLD_MAX = { x: 180, y: 85.05112878 };
 let wplaceTileLayer;
 let loadedTiles = new Map(); // Cache for loaded tile images
-const MIN_PIXEL_SIZE = 2.5; // Minimum pixel size in screen pixels before we hide tiles
+const MIN_PIXEL_SIZE = 1/4; // Minimum pixel size in screen pixels before we hide tiles
+
+
+let downloadQueue = [];
+let downloadingTiles = new Set();
+let downloadedTiles = new Set();
+
+
+// let tileTimestamps = new Map(); // Track when tiles were downloaded
+// let autoRefreshEnabled = true; // Whether to auto-redownload old tiles
+// const TILE_REFRESH_HOURS = 1; // Hours before considering a tile stale
+
+let emptyTiles = new Set();
+let lastDownloadTime = 0;
+const DOWNLOAD_RATE_LIMIT = 200; // milliseconds between downloads
+const MAX_CONCURRENT_DOWNLOADS = 3;
+let activeDownloads = 0;
+let tileStatusOverlays = new Map(); // For showing download status
+
+//make tiles available
+window.loadedTiles = loadedTiles;
+window.downloadedTiles = downloadedTiles;
+window.emptyTiles = emptyTiles;
+window.downloadingTiles = downloadingTiles;
+window.tileStatusOverlays = tileStatusOverlays;
+
+// Check if we're running in Electron
+function isElectron() {
+    return typeof window.electronAPI !== 'undefined' && window.electronAPI.isElectron;
+}
+
+// Replace loadDownloadedTilesList function
+async function loadDownloadedTilesList() {
+    if (isElectron()) {
+        try {
+            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
+            const data = await window.electronAPI.readFile(filePath, 'utf8');
+            const parsed = JSON.parse(data);
+            
+            // Handle both old format (array) and new format (object)
+            if (Array.isArray(parsed)) {
+                downloadedTiles = new Set(parsed);
+                window.downloadedTiles = downloadedTiles;
+                emptyTiles = new Set();
+                window.emptyTiles = emptyTiles;
+            } else {
+                downloadedTiles = new Set(parsed.downloaded || []);
+                window.downloadedTiles = downloadedTiles;
+                emptyTiles = new Set(parsed.empty || []);
+                window.emptyTiles = emptyTiles;
+            }
+            
+            updateStatus(`Loaded ${downloadedTiles.size} downloaded tiles (${emptyTiles.size} empty) from cache`);
+        } catch (error) {
+            console.log('No existing downloaded tiles cache found');
+            downloadedTiles = new Set();
+            window.downloadedTiles = downloadedTiles;
+            emptyTiles = new Set();
+            window.emptyTiles = emptyTiles;
+        }
+    }else{
+        console.log("Not running in Electron, skipping loading downloaded tiles list");
+    }
+}
+function updateVisibleTiles() {
+    const pixelSize = calculatePixelSizeOnScreen();
+    if (pixelSize < MIN_PIXEL_SIZE) {
+        // Remove all tile overlays when zoomed out too far
+        wplaceTileLayer.clearLayers();
+        loadedTiles.clear();
+        return;
+    }
+    
+    const viewInfo = getWplaceViewInfo();
+    if (!viewInfo.visibleTiles) {
+        wplaceTileLayer.clearLayers();
+        loadedTiles.clear();
+        return;
+    }
+    
+    const visibleTiles = viewInfo.visibleTiles;
+    const currentlyVisible = new Set();
+    
+    // Load visible downloaded tiles
+    for (let tileX = visibleTiles.startX; tileX <= visibleTiles.endX; tileX++) {
+        for (let tileY = visibleTiles.startY; tileY <= visibleTiles.endY; tileY++) {
+            if (tileX >= 0 && tileX < 2048 && tileY >= 0 && tileY < 2048) {
+                const tileKey = `${tileX}-${tileY}`;
+                currentlyVisible.add(tileKey);
+                
+                // Only load if downloaded and not already loaded
+                if (downloadedTiles.has(tileKey) && !loadedTiles.has(tileKey) && !emptyTiles.has(tileKey)) {
+                    loadWplaceTile(tileX, tileY);
+                }
+            }
+        }
+    }
+    
+    // Remove tiles that are no longer visible
+    const tilesToRemove = [];
+    loadedTiles.forEach((overlay, tileKey) => {
+        if (!currentlyVisible.has(tileKey)) {
+            wplaceTileLayer.removeLayer(overlay);
+            tilesToRemove.push(tileKey);
+        }
+    });
+    
+    // Clean up the loadedTiles map
+    tilesToRemove.forEach(tileKey => {
+        loadedTiles.delete(tileKey);
+    });
+    
+    updateStatus(`Showing ${loadedTiles.size} tiles, ${tilesToRemove.length} removed`);
+}
+
+async function saveDownloadedTilesList() {
+    if (isElectron()) {
+        try {
+            const data = {
+                downloaded: Array.from(downloadedTiles),
+                empty: Array.from(emptyTiles)
+            };
+            
+            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
+            await window.electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
+        } catch (error) {
+            console.error('Failed to save downloaded tiles list:', error);
+        }
+    }
+}
+
+// Create distributed directory structure
+function getTileFilePath(tileX, tileY) {
+    if (isElectron()) {
+        // Distribute tiles across subdirectories to avoid filesystem slowdown
+        const subDir1 = Math.floor(tileX / 64);
+        const subDir2 = Math.floor(tileY / 64);
+        return window.electronAPI.join(window.electronAPI.cwd(), 'tiles', `${subDir1}`, `${subDir2}`, `${tileX}_${tileY}.png`);
+    }
+    return `tiles/${tileX}_${tileY}.png`;
+}
+
+async function ensureDirectoryExists(filePath) {
+    if (isElectron()) {
+        const dir = window.electronAPI.dirname(filePath);
+        try {
+            await window.electronAPI.mkdir(dir, { recursive: true });
+        } catch (error) {
+            // Directory might already exist
+        }
+    }
+}
+
+function calculateTileDistance(tileX, tileY, centerTileX, centerTileY) {
+    return Math.sqrt(Math.pow(tileX - centerTileX, 2) + Math.pow(tileY - centerTileY, 2));
+}
+
+function prioritizeTiles(visibleTiles) {
+    const bounds = map.getBounds();
+    const center = map.getCenter();
+    const centerWplace = latLngToWplace(center.lat, center.lng);
+    
+    if (!centerWplace) return [];
+    
+    const tiles = [];
+    for (let tileX = visibleTiles.startX; tileX <= visibleTiles.endX; tileX++) {
+        for (let tileY = visibleTiles.startY; tileY <= visibleTiles.endY; tileY++) {
+            if (tileX >= 0 && tileX < 2048 && tileY >= 0 && tileY < 2048) {
+                const distance = calculateTileDistance(tileX, tileY, centerWplace.tileX, centerWplace.tileY);
+                tiles.push({ tileX, tileY, distance });
+            }
+        }
+    }
+    
+    // Sort by distance from center
+    tiles.sort((a, b) => a.distance - b.distance);
+    return tiles;
+}
+
+async function downloadTile(tileX, tileY) {
+    const tileKey = `${tileX}-${tileY}`;
+    
+    if (downloadedTiles.has(tileKey) || downloadingTiles.has(tileKey)) {
+        return false; // Already downloaded or downloading
+    }
+    // return false; // TEMP DISABLE
+
+    downloadingTiles.add(tileKey);
+    activeDownloads++;
+    
+    // Show downloading status
+    showTileStatus(tileX, tileY, 'downloading');
+    
+    try {
+        const url = `https://backend.wplace.live/files/s0/tiles/${tileX}/${tileY}.png`;
+        const response = await fetch(url);
+        
+        if (response.status === 404) {
+            // Tile is empty, mark as downloaded but don't save file
+            downloadedTiles.add(tileKey);
+            emptyTiles.add(tileKey);
+            downloadingTiles.delete(tileKey);
+            activeDownloads--;
+            
+            // Remove status overlay (no visual indication needed for empty tiles)
+            const statusOverlay = tileStatusOverlays.get(tileKey);
+            if (statusOverlay) {
+                map.removeLayer(statusOverlay);
+                tileStatusOverlays.delete(tileKey);
+            }
+            
+            updateStatus(`Tile ${tileX},${tileY} is empty (404) - marked as complete`);
+            return true;
+        }
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const blob = await response.blob();
+        
+        if (isElectron()) {
+            // Save to file system
+            const filePath = getTileFilePath(tileX, tileY);
+            await ensureDirectoryExists(filePath);
+            
+            const buffer = await blob.arrayBuffer();
+            await window.electronAPI.writeFile(filePath, window.electronAPI.bufferFrom(buffer));
+        }
+        
+        // Mark as downloaded
+        downloadedTiles.add(tileKey);
+        downloadingTiles.delete(tileKey);
+        activeDownloads--;
+        
+        // Update status display
+        showTileStatus(tileX, tileY, 'downloaded');
+        
+        // Load the tile into the map only if currently visible
+        const viewInfo = getWplaceViewInfo();
+        if (viewInfo.visibleTiles && 
+            tileX >= viewInfo.visibleTiles.startX && tileX <= viewInfo.visibleTiles.endX &&
+            tileY >= viewInfo.visibleTiles.startY && tileY <= viewInfo.visibleTiles.endY) {
+            loadWplaceTile(tileX, tileY);
+        }
+        
+        updateStatus(`Downloaded tile ${tileX},${tileY} (${downloadedTiles.size} total)`);
+        
+        // Save updated list periodically
+        if (downloadedTiles.size % 10 === 0) {
+            await saveDownloadedTilesList();
+        }
+        
+        return true;
+        
+    } catch (error) {
+        console.error(`Failed to download tile ${tileX},${tileY}:`, error);
+        downloadingTiles.delete(tileKey);
+        activeDownloads--;
+        showTileStatus(tileX, tileY, 'failed');
+        return false;
+    }
+}
+function showTileStatus(tileX, tileY, status) {
+    const pixelSize = calculatePixelSizeOnScreen();
+    if (pixelSize < MIN_PIXEL_SIZE) return; // Don't show status if tiles are too small
+    
+    const tileKey = `${tileX}-${tileY}`;
+    
+    // Remove existing status overlay
+    if (tileStatusOverlays.has(tileKey)) {
+        map.removeLayer(tileStatusOverlays.get(tileKey));
+        tileStatusOverlays.delete(tileKey);
+    }
+    
+    // Choose color based on status
+    let color, opacity;
+    switch (status) {
+        case 'downloading':
+            color = '#8000ff'; // Purple
+            opacity = 0.6;
+            break;
+        case 'downloaded':
+            // Remove the overlay for downloaded tiles
+            return;
+        case 'failed':
+            color = '#ff0000'; // Red
+            opacity = 0.4;
+            break;
+        case 'needed':
+            color = '#808080'; // Gray
+            opacity = 0.3;
+            break;
+        default:
+            return;
+    }
+    
+    // Calculate tile bounds
+    const [topLat, leftLng] = wplaceToLatLng(tileX, tileY, 0, 0);
+    const [bottomLat, rightLng] = wplaceToLatLng(tileX + 1, tileY + 1, 0, 0);
+    
+    const overlay = L.rectangle([
+        [bottomLat, leftLng],
+        [topLat, rightLng]
+    ], {
+        color: color,
+        fillColor: color,
+        fillOpacity: opacity,
+        weight: 1,
+        opacity: 0.8
+    });
+    
+    overlay.addTo(map);
+    tileStatusOverlays.set(tileKey, overlay);
+}
+
+function updateTileStatusDisplay() {
+    const pixelSize = calculatePixelSizeOnScreen();
+    if (pixelSize < MIN_PIXEL_SIZE) {
+        // Clear all status overlays when zoomed out
+        tileStatusOverlays.forEach(overlay => map.removeLayer(overlay));
+        tileStatusOverlays.clear();
+        return;
+    }
+    
+    const viewInfo = getWplaceViewInfo();
+    if (!viewInfo.visibleTiles) return;
+    
+    const visibleTiles = viewInfo.visibleTiles;
+    
+    // Show status for all visible tiles
+    for (let tileX = visibleTiles.startX; tileX <= visibleTiles.endX; tileX++) {
+        for (let tileY = visibleTiles.startY; tileY <= visibleTiles.endY; tileY++) {
+            const tileKey = `${tileX}-${tileY}`;
+            
+            if (downloadingTiles.has(tileKey)) {
+                showTileStatus(tileX, tileY, 'downloading');
+            } else if (!downloadedTiles.has(tileKey)) {
+                showTileStatus(tileX, tileY, 'needed');
+            }
+        }
+    }
+}
+
+async function processDownloadQueue() {
+    if (downloadQueue.length === 0 || activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
+        return;
+    }
+    
+    const now = Date.now();
+    if (now - lastDownloadTime < DOWNLOAD_RATE_LIMIT) {
+        // Schedule next attempt
+        setTimeout(processDownloadQueue, DOWNLOAD_RATE_LIMIT - (now - lastDownloadTime));
+        return;
+    }
+    
+    const tile = downloadQueue.shift();
+    if (tile) {
+        lastDownloadTime = now;
+        await downloadTile(tile.tileX, tile.tileY);
+        
+        // Continue processing queue
+        setTimeout(processDownloadQueue, DOWNLOAD_RATE_LIMIT);
+    }
+}
+
+function queueTileDownloads() {
+    const pixelSize = calculatePixelSizeOnScreen();
+    if (pixelSize < MIN_PIXEL_SIZE) {
+        // Clear queue if pixels are too small
+        downloadQueue = [];
+        return;
+    }
+    
+    const viewInfo = getWplaceViewInfo();
+    if (!viewInfo.visibleTiles) return;
+    
+    const prioritizedTiles = prioritizeTiles(viewInfo.visibleTiles);
+    
+    // Add undownloaded tiles to queue
+    prioritizedTiles.forEach(tile => {
+        const tileKey = `${tile.tileX}-${tile.tileY}`;
+        if (!downloadedTiles.has(tileKey) && !downloadingTiles.has(tileKey)) {
+            // Check if already in queue
+            const alreadyQueued = downloadQueue.some(queuedTile => 
+                queuedTile.tileX === tile.tileX && queuedTile.tileY === tile.tileY
+            );
+            
+            if (!alreadyQueued) {
+                downloadQueue.push(tile);
+            }
+        }
+    });
+    
+    // Start processing if not already running
+    processDownloadQueue();
+}
+
 function createWplaceTileLayer() {
     wplaceTileLayer = L.layerGroup();
+    window.wplaceTileLayer = wplaceTileLayer;
     wplaceTileLayer.addTo(map);
 }
 function loadWplaceTile(tileX, tileY) {
@@ -29,14 +427,27 @@ function loadWplaceTile(tileX, tileY) {
         return loadedTiles.get(tileKey);
     }
     
+    // Skip if we know this tile is empty
+    if (emptyTiles && emptyTiles.has(tileKey)) {
+        return null;
+    }
+    
+    // Skip if not downloaded yet
+    if (!downloadedTiles.has(tileKey)) {
+        return null;
+    }
+    
     // Calculate tile bounds
     const [topLat, leftLng] = wplaceToLatLng(tileX, tileY, 0, 0);
-    const [bottomLat, rightLng] = wplaceToLatLng(tileX+1, tileY+1, 0, 0);
+    const [bottomLat, rightLng] = wplaceToLatLng(tileX + 1, tileY + 1, 0, 0);
     
-    // Create image overlay
-    const tilePath = `tiles/${tileX}_${tileY}.png`; // Adjust path as needed
+    // Use the correct file path (distributed structure)
+    const tilePath = getTileFilePath(tileX, tileY);
     
-    const imageOverlay = L.imageOverlay(tilePath, [
+    // Convert to file:// URL for Electron
+    const fileUrl = isElectron() ? `file://${tilePath}` : tilePath;
+    
+    const imageOverlay = L.imageOverlay(fileUrl, [
         [bottomLat, leftLng], // southwest corner
         [topLat, rightLng]    // northeast corner
     ], {
@@ -47,16 +458,16 @@ function loadWplaceTile(tileX, tileY) {
     
     // Handle load events
     imageOverlay.on('load', function() {
-        updateStatus(`Loaded tile ${tileX},${tileY}`);
+        console.log(`Loaded tile ${tileX},${tileY} from file`);
     });
     
     imageOverlay.on('error', function() {
-        console.log(`Failed to load tile ${tileX},${tileY}`);
+        console.log(`Failed to load tile ${tileX},${tileY} from file`);
         loadedTiles.delete(tileKey);
     });
     
+    // Store and add to layer
     loadedTiles.set(tileKey, imageOverlay);
-    
     wplaceTileLayer.addLayer(imageOverlay);
     
     return imageOverlay;
@@ -332,18 +743,7 @@ function calculatePixelSizeOnScreen() {
     }
     return (mapState.worldPixels.x / mapSize);
 }
-// function onZoomChange() {
-//     const zoom = map.getZoom();
-//     const pixelSize = calculatePixelSizeOnScreen();
-    
-//     if (pixelSize < MIN_PIXEL_SIZE) {
-//         console.log(`Zoom ${zoom}: pixels too small (${pixelSize}px), hiding tiles`);
-//         hideAllTiles();
-//     } else {
-//         console.log(`Zoom ${zoom}: pixels visible (${pixelSize}px), showing tiles`);
-//         showRelevantTiles();
-//     }
-// }
+
 
 function createGridLayer() {
     gridLayer = L.layerGroup();
@@ -504,8 +904,13 @@ function addGridToCurrentView() {
 
 function setupEventListeners() {
     // Update info panel on map events
-    // map.on('zoom', onZoomChange);
-    map.on('zoomend moveend', updateMapInfo);
+    map.on('zoomend moveend', function() {
+        updateMapInfo();
+        updateTileStatusDisplay();
+        updateVisibleTiles(); // Manage visible tiles efficiently
+        queueTileDownloads();
+    });
+    
     map.on('mousemove', updateMouseInfo);
     
     // Handle map clicks for pixel selection
@@ -523,7 +928,15 @@ function setupEventListeners() {
             updateStatus(`Clicked: ${lat}, ${lng} (out of bounds)`);
         }
     });
+    
+    // Initial setup
+    loadDownloadedTilesList().then(() => {
+        console.log(`Loaded ${downloadedTiles.size} downloaded tiles from storage`);
+        updateVisibleTiles(); // Load only visible tiles
+        queueTileDownloads(); // Then queue new downloads
+    });
 }
+
 function selectPixel(wplaceCoords, latlng) {
     selectedPixel = wplaceCoords;
     
@@ -579,6 +992,8 @@ function updateMapInfo() {
         `(${wplaceBounds.topLeft.tileX},${wplaceBounds.topLeft.tileY},${wplaceBounds.topLeft.pixelX},${wplaceBounds.topLeft.pixelY}) to (${wplaceBounds.bottomRight.tileX},${wplaceBounds.bottomRight.tileY},${wplaceBounds.bottomRight.pixelX},${wplaceBounds.bottomRight.pixelY})` :
         'Out of bounds';
     document.getElementById('containerPixelInfo').textContent = `(${containerBounds.min.x}, ${containerBounds.min.y}) to (${containerBounds.max.x}, ${containerBounds.max.y})`;
+    document.getElementById('downloadInfo').textContent = `${downloadedTiles.size} downloaded, ${activeDownloads} active`;
+    document.getElementById('queueInfo').textContent = `${downloadQueue.length} queued`;
 }
 
 function updateMouseInfo(e) {

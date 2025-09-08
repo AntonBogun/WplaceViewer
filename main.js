@@ -1,3 +1,7 @@
+// console.log('=== MAIN SCRIPT STARTING ===');
+// console.log('Current __dirname:', __dirname);
+// console.log('process.cwd():', process.cwd());
+
 const { app, BrowserWindow, Menu } = require('electron');
 const path = require('path');
 
@@ -5,13 +9,15 @@ let mainWindow;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1800,
+    height: 1200,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       enableRemoteModule: false,
-      webSecurity: true
+      webSecurity: true,
+      sandbox: false,
+      preload: path.join(__dirname, 'preload.js') // Add this line
     },
     icon: path.join(__dirname, 'assets/icon.png'), // optional
     title: 'wplace Viewer'
