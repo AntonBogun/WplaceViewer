@@ -1200,8 +1200,9 @@ function updateMapInfo() {
         topLeft: containerToWplace(containerBounds.min.x, containerBounds.min.y),
         bottomRight: containerToWplace(containerBounds.max.x, containerBounds.max.y)
     }
+    const pixelRatio = calculatePixelSizeOnScreen();
 
-    document.getElementById('zoomLevel').textContent = `${zoom.toFixed(1)} (${pixelBounds.max.x}, ${pixelBounds.max.y})`;
+    document.getElementById('zoomLevel').textContent = `${zoom.toFixed(1)} (${pixelBounds.max.x}, ${pixelBounds.max.y}), pixel ratio: ${pixelRatio.toFixed(3)}`;
     document.getElementById('centerCoords').textContent = `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
     document.getElementById('wplaceSpanInfo').textContent = wplaceBounds.topLeft && wplaceBounds.bottomRight ?
         `(${wplaceBounds.topLeft.tileX},${wplaceBounds.topLeft.tileY},${wplaceBounds.topLeft.pixelX},${wplaceBounds.topLeft.pixelY}) to (${wplaceBounds.bottomRight.tileX},${wplaceBounds.bottomRight.tileY},${wplaceBounds.bottomRight.pixelX},${wplaceBounds.bottomRight.pixelY})` :
