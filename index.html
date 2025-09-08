@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>wplace Viewer</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #2c2c2c;
+            color: white;
+            overflow: hidden;
+        }
+
+        #map {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        .info-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 1000;
+            min-width: 200px;
+            font-size: 12px;
+        }
+
+        .info-panel h3 {
+            margin-bottom: 10px;
+            color: #4CAF50;
+        }
+
+        .info-item {
+            margin-bottom: 5px;
+        }
+
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 1000;
+        }
+
+        .control-group {
+            margin-bottom: 10px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        select, button {
+            padding: 5px 10px;
+            border: none;
+            border-radius: 4px;
+            background: #444;
+            color: white;
+            cursor: pointer;
+        }
+
+        select:hover, button:hover {
+            background: #555;
+        }
+
+        .status-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 8px 15px;
+            font-size: 11px;
+            display: flex;
+            justify-content: space-between;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div class="controls">
+        <h3>Map Controls</h3>
+        <div class="control-group">
+            <label for="baseLayer">Base Layer:</label>
+            <select id="baseLayer">
+                <option value="osm">OpenStreetMap</option>
+                <option value="satellite">Satellite</option>
+                <option value="topo">Topographic</option>
+                <option value="dark">Dark Mode</option>
+            </select>
+        </div>
+    <div class="control-group">
+            <button id="resetView">Reset View</button>
+            <button id="toggleGrid">Toggle Grid</button>
+            <button id="togglePixels">Toggle Pixels</button>
+            <button id="centerOnPixels">Center on Test Pixels</button>
+        </div>
+    </div>
+
+    <div class="info-panel">
+        <h3>Map Info</h3>
+        <div class="info-item">Zoom: <span id="zoomLevel">-</span></div>
+        <div class="info-item">Center: <span id="centerCoords">-</span></div>
+        <div class="info-item">Mouse: <span id="mouseCoords">-</span></div>
+        <div class="info-item">wplace Tile: <span id="wplaceTileInfo">-</span></div>
+        <div class="info-item">wplace Pixel: <span id="wplacePixelInfo">-</span></div>
+    </div>
+
+    <div class="status-bar">
+        <span>wplace Viewer - Click to select pixels</span>
+        <span id="loadStatus">Ready</span>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

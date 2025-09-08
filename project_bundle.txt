@@ -1,0 +1,501 @@
+--- .\app.js ---
+// Initialize the map
+let map;
+let currentBaseLayer;
+let gridLayer;
+let baseLayers = {};
+
+
+
+// Initialize map when page loads
+document.addEventListener('DOMContentLoaded', function() {
+    initializeMap();
+    setupControls();
+    setupEventListeners();
+});
+
+function initializeMap() {
+    // Create map centered on world view
+    map = L.map('map', {
+        center: [0, 0],
+        zoom: 2,
+        zoomControl: false, // We'll add custom controls
+        attributionControl: true
+    });
+
+    // Add zoom control in bottom right
+    L.control.zoom({
+        position: 'bottomright'
+    }).addTo(map);
+
+    // Define base layers
+    baseLayers = {
+        osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors',
+            maxZoom: 19
+        }),
+        satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: '© Esri, Maxar, Earthstar Geographics',
+            maxZoom: 18
+        }),
+        topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenTopoMap contributors',
+            maxZoom: 17
+        }),
+        dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '© CARTO, © OpenStreetMap contributors',
+            maxZoom: 19
+        })
+    };
+
+    // Set initial base layer
+    currentBaseLayer = baseLayers.osm;
+    currentBaseLayer.addTo(map);
+
+    // Create a grid overlay for tile boundaries (useful for debugging)
+    createGridLayer();
+
+    updateStatus('Map initialized');
+}
+
+function createGridLayer() {
+    gridLayer = L.layerGroup();
+    
+    // This will show tile boundaries - useful for understanding tile structure
+    // We'll add this when user clicks "Toggle Grid"
+}
+
+function setupControls() {
+    const baseLayerSelect = document.getElementById('baseLayer');
+    const resetViewBtn = document.getElementById('resetView');
+    const toggleGridBtn = document.getElementById('toggleGrid');
+
+    // Base layer switcher
+    baseLayerSelect.addEventListener('change', function() {
+        const selectedLayer = this.value;
+        
+        // Remove current layer
+        map.removeLayer(currentBaseLayer);
+        
+        // Add new layer
+        currentBaseLayer = baseLayers[selectedLayer];
+        currentBaseLayer.addTo(map);
+        
+        updateStatus(`Switched to ${selectedLayer} layer`);
+    });
+
+    // Reset view
+    resetViewBtn.addEventListener('click', function() {
+        map.setView([0, 0], 2);
+        updateStatus('View reset');
+    });
+
+    // Toggle grid
+    let gridVisible = false;
+    toggleGridBtn.addEventListener('click', function() {
+        if (gridVisible) {
+            map.removeLayer(gridLayer);
+            gridVisible = false;
+            this.textContent = 'Show Grid';
+        } else {
+            addGridToCurrentView();
+            map.addLayer(gridLayer);
+            gridVisible = true;
+            this.textContent = 'Hide Grid';
+        }
+    });
+}
+
+function addGridToCurrentView() {
+    // Clear existing grid
+    gridLayer.clearLayers();
+    
+    const bounds = map.getBounds();
+    const zoom = map.getZoom();
+    
+    // Calculate tile boundaries for current view
+    const tileSize = 256; // Standard tile size
+    const pixelBounds = map.getPixelBounds();
+    
+    // Draw grid lines based on current zoom level
+    const gridSpacing = Math.pow(2, Math.max(0, 5 - zoom)) * 0.1;
+    
+    // Vertical lines
+    for (let lng = Math.floor(bounds.getWest() / gridSpacing) * gridSpacing; 
+         lng <= bounds.getEast(); 
+         lng += gridSpacing) {
+        const line = L.polyline([
+            [bounds.getNorth(), lng],
+            [bounds.getSouth(), lng]
+        ], {
+            color: '#00ff00',
+            weight: 1,
+            opacity: 0.5
+        });
+        gridLayer.addLayer(line);
+    }
+    
+    // Horizontal lines
+    for (let lat = Math.floor(bounds.getSouth() / gridSpacing) * gridSpacing; 
+         lat <= bounds.getNorth(); 
+         lat += gridSpacing) {
+        const line = L.polyline([
+            [lat, bounds.getWest()],
+            [lat, bounds.getEast()]
+        ], {
+            color: '#00ff00',
+            weight: 1,
+            opacity: 0.5
+        });
+        gridLayer.addLayer(line);
+    }
+}
+
+function setupEventListeners() {
+    // Update info panel on map events
+    map.on('zoomend moveend', updateMapInfo);
+    map.on('mousemove', updateMouseInfo);
+    
+    // Handle map clicks (useful for debugging)
+    map.on('click', function(e) {
+        const lat = e.latlng.lat.toFixed(6);
+        const lng = e.latlng.lng.toFixed(6);
+        console.log(`Clicked at: ${lat}, ${lng}`);
+        updateStatus(`Clicked: ${lat}, ${lng}`);
+    });
+}
+
+function updateMapInfo() {
+    const zoom = map.getZoom();
+    const center = map.getCenter();
+    
+    document.getElementById('zoomLevel').textContent = zoom.toFixed(1);
+    document.getElementById('centerCoords').textContent = 
+        `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
+}
+
+function updateMouseInfo(e) {
+    const lat = e.latlng.lat.toFixed(6);
+    const lng = e.latlng.lng.toFixed(6);
+    
+    document.getElementById('mouseCoords').textContent = `${lat}, ${lng}`;
+    
+    // Calculate which tile this would be (for future wplace integration)
+    const zoom = map.getZoom();
+    const tileX = Math.floor((e.latlng.lng + 180) / 360 * Math.pow(2, zoom));
+    const tileY = Math.floor((1 - Math.log(Math.tan(e.latlng.lat * Math.PI / 180) + 1 / Math.cos(e.latlng.lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, zoom));
+    
+    // Convert to wplace coordinates
+    const wplaceCoords = latLngToWplace(e.latlng.lat, e.latlng.lng);
+    if (wplaceCoords) {
+        document.getElementById('wplaceTileInfo').textContent = `(${wplaceCoords.tileX}, ${wplaceCoords.tileY})`;
+        document.getElementById('wplacePixelInfo').textContent = `(${wplaceCoords.pixelX}, ${wplaceCoords.pixelY})`;
+    } else {
+        document.getElementById('wplaceTileInfo').textContent = 'Out of bounds';
+        document.getElementById('wplacePixelInfo').textContent = 'Out of bounds';
+    }
+}
+
+// Convert lat/lng back to wplace coordinates
+function latLngToWplace(lat, lng) {
+    // Check if we're within bounds
+    if (lat > WORLD_MIN.y || lat < WORLD_MAX.y || lng < WORLD_MIN.x || lng > WORLD_MAX.x) {
+        return null;
+    }
+    
+    // Inverse of the wplace coordinate conversion
+    const x_pixel = (lng - WORLD_MIN.x) * R_x;
+    
+    // Inverse of h function for y
+    const y_mercator = R_y * Math.log(Math.tan(Math.PI / 4 + (-lat * Math.PI / 180) / 2));
+    const y_pixel = y_mercator + 2048 * (1000 / 2);
+    
+    // Calculate tile and pixel within tile
+    const tileX = Math.floor(x_pixel / 1000);
+    const tileY = Math.floor(y_pixel / 1000);
+    const pixelX = Math.floor(x_pixel % 1000);
+    const pixelY = Math.floor(y_pixel % 1000);
+    
+    // Ensure we're within the 2048x2048 tile grid
+    if (tileX < 0 || tileX >= 2048 || tileY < 0 || tileY >= 2048) {
+        return null;
+    }
+    
+    return {
+        tileX: tileX,
+        tileY: tileY,
+        pixelX: pixelX,
+        pixelY: pixelY
+    };
+}
+
+function updateStatus(message) {
+    document.getElementById('loadStatus').textContent = message;
+    console.log(`Status: ${message}`);
+}
+
+// Utility function to convert coordinates to wplace tile coordinates
+// This will be useful when we add wplace data
+function coordsToWplaceTile(lat, lng, zoom) {
+    // This is where you'll implement the conversion from lat/lng to wplace tile coordinates
+    // For now, just a placeholder
+    return {
+        x: Math.floor((lng + 180) / 360 * Math.pow(2, zoom)),
+        y: Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, zoom)),
+        z: zoom
+    };
+}
+
+// Function to load wplace tiles (placeholder for now)
+function loadWplaceTiles() {
+    // This is where you'll implement loading your downloaded wplace tiles
+    // You could:
+    // 1. Load them from local files
+    // 2. Create a custom Leaflet layer
+    // 3. Overlay them on the base map
+    
+    updateStatus('Ready to implement wplace tile loading');
+}
+
+--- .\index.html ---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>wplace Viewer</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #2c2c2c;
+            color: white;
+            overflow: hidden;
+        }
+
+        #map {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        .info-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 1000;
+            min-width: 200px;
+            font-size: 12px;
+        }
+
+        .info-panel h3 {
+            margin-bottom: 10px;
+            color: #4CAF50;
+        }
+
+        .info-item {
+            margin-bottom: 5px;
+        }
+
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 1000;
+        }
+
+        .control-group {
+            margin-bottom: 10px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        select, button {
+            padding: 5px 10px;
+            border: none;
+            border-radius: 4px;
+            background: #444;
+            color: white;
+            cursor: pointer;
+        }
+
+        select:hover, button:hover {
+            background: #555;
+        }
+
+        .status-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 8px 15px;
+            font-size: 11px;
+            display: flex;
+            justify-content: space-between;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div class="controls">
+        <h3>Map Controls</h3>
+        <div class="control-group">
+            <label for="baseLayer">Base Layer:</label>
+            <select id="baseLayer">
+                <option value="osm">OpenStreetMap</option>
+                <option value="satellite">Satellite</option>
+                <option value="topo">Topographic</option>
+                <option value="dark">Dark Mode</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <button id="resetView">Reset View</button>
+            <button id="toggleGrid">Toggle Grid</button>
+        </div>
+    </div>
+
+    <div class="info-panel">
+        <h3>Map Info</h3>
+        <div class="info-item">Zoom: <span id="zoomLevel">-</span></div>
+        <div class="info-item">Center: <span id="centerCoords">-</span></div>
+        <div class="info-item">Mouse: <span id="mouseCoords">-</span></div>
+        <div class="info-item">Tile: <span id="tileInfo">-</span></div>
+    </div>
+
+    <div class="status-bar">
+        <span>wplace Viewer - Ready to load wplace tiles</span>
+        <span id="loadStatus">Base map loaded</span>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
+
+--- .\main.js ---
+const { app, BrowserWindow, Menu } = require('electron');
+const path = require('path');
+
+let mainWindow;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      enableRemoteModule: false,
+      webSecurity: true
+    },
+    icon: path.join(__dirname, 'assets/icon.png'), // optional
+    title: 'wplace Viewer'
+  });
+
+  // Load the app
+  mainWindow.loadFile('index.html');
+
+  // Open DevTools in development
+  if (process.argv.includes('--dev')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// This method will be called when Electron has finished initialization
+app.whenReady().then(createWindow);
+
+// Quit when all windows are closed
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
+});
+
+// Create application menu
+const template = [
+  {
+    label: 'File',
+    submenu: [
+      {
+        label: 'Reload',
+        accelerator: 'CmdOrCtrl+R',
+        click: () => {
+          if (mainWindow) {
+            mainWindow.reload();
+          }
+        }
+      },
+      {
+        label: 'Toggle DevTools',
+        accelerator: 'CmdOrCtrl+Shift+I',
+        click: () => {
+          if (mainWindow) {
+            mainWindow.webContents.toggleDevTools();
+          }
+        }
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+        click: () => {
+          app.quit();
+        }
+      }
+    ]
+  },
+  {
+    label: 'View',
+    submenu: [
+      {
+        label: 'Zoom In',
+        accelerator: 'CmdOrCtrl+Plus',
+        click: () => {
+          if (mainWindow) {
+            mainWindow.webContents.executeJavaScript('map.zoomIn()');
+          }
+        }
+      },
+      {
+        label: 'Zoom Out',
+        accelerator: 'CmdOrCtrl+-',
+        click: () => {
+          if (mainWindow) {
+            mainWindow.webContents.executeJavaScript('map.zoomOut()');
+          }
+        }
+      }
+    ]
+  }
+];
+
+Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+

@@ -1,0 +1,31 @@
+{
+  "name": "wplace-viewer",
+  "version": "1.0.0",
+  "description": "A better wplace tile viewer",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "pack": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4"
+  },
+  "build": {
+    "appId": "com.yourname.wplace-viewer",
+    "productName": "WPlace Viewer",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!node_modules",
+      "!dist"
+    ]
+  }
+}
