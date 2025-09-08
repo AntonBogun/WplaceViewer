@@ -7,6 +7,8 @@ let baseLayers = {};
 let selectedPixel = null;
 let selectionHighlight = null;
 
+
+
 // wplace coordinate conversion constants
 const mapSize = 2048000; // Total pixels in Web Mercator at max zoom (2048 tiles * 1000 pixels each)
 const tileSize = 1000; // Each wplace tile is 1000x1000 pixels
@@ -29,7 +31,7 @@ function loadWplaceTile(tileX, tileY) {
     
     // Calculate tile bounds
     const [topLat, leftLng] = wplaceToLatLng(tileX, tileY, 0, 0);
-    const [bottomLat, rightLng] = wplaceToLatLng(tileX, tileY, 999, 999);
+    const [bottomLat, rightLng] = wplaceToLatLng(tileX+1, tileY+1, 0, 0);
     
     // Create image overlay
     const tilePath = `tiles/${tileX}_${tileY}.png`; // Adjust path as needed
@@ -54,8 +56,33 @@ function loadWplaceTile(tileX, tileY) {
     });
     
     loadedTiles.set(tileKey, imageOverlay);
+    
+    wplaceTileLayer.addLayer(imageOverlay);
+    
     return imageOverlay;
 }
+
+// Load image from file system (for Electron)
+function loadImageFromFile(filePath) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = filePath;
+    });
+}
+
+// Load image from URL/blob
+function loadImageFromUrl(url) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.crossOrigin = 'anonymous'; // For CORS if needed
+        img.src = url;
+    });
+}
+
 
 // Get current map view
 function getCurrentMapState() {
@@ -292,29 +319,18 @@ function initializeMap() {
     createGridLayer();
     createPixelLayer();
     setupMapLimits();
+    createWplaceTileLayer();
 
     updateStatus('Map initialized');
 }
 
 function calculatePixelSizeOnScreen() {
     // Calculate how big one wplace pixel is on screen
-    const zoom = map.getZoom();
-    const center = map.getCenter();
-    
-    // Get two points that are 1 wplace pixel apart
-    const wplaceCoords = latLngToWplace(center.lat, center.lng);
-    if (!wplaceCoords) return 0;
-    
-    const [lat1, lng1] = wplaceToLatLng(wplaceCoords.tileX, wplaceCoords.tileY, wplaceCoords.pixelX, wplaceCoords.pixelY);
-    const [lat2, lng2] = wplaceToLatLng(wplaceCoords.tileX, wplaceCoords.tileY, wplaceCoords.pixelX + 1, wplaceCoords.pixelY);
-    
-    // Convert to screen pixels
-    const point1 = map.latLngToContainerPoint([lat1, lng1]);
-    const point2 = map.latLngToContainerPoint([lat2, lng2]);
-    
-    // Distance in screen pixels
-    const distance = Math.sqrt(Math.pow(point2.x - point1.x, 2) + Math.pow(point2.y - point1.y, 2));
-    return distance;
+    const mapState = getCurrentMapState();
+    if (mapState.worldPixels.x !== mapState.worldPixels.y) {
+        console.warn("Unexpected: worldPixels x and y differ:", mapState);
+    }
+    return (mapState.worldPixels.x / mapSize);
 }
 // function onZoomChange() {
 //     const zoom = map.getZoom();
@@ -381,7 +397,7 @@ function setupControls() {
     });
     const togglePixelsBtn = document.getElementById('togglePixels');
     const centerOnPixelsBtn = document.getElementById('centerOnPixels');
-    
+    const toggleImageBtn = document.getElementById('toggleImage');
     // Toggle pixels
     let pixelsVisible = true;
     togglePixelsBtn.addEventListener('click', function() {
@@ -395,6 +411,20 @@ function setupControls() {
             this.textContent = 'Hide Pixels';
         }
     });
+    // Toggle image layer
+    let imageVisible = true;
+    toggleImageBtn.addEventListener('click', function() {
+        if (imageVisible) {
+            map.removeLayer(wplaceTileLayer);
+            imageVisible = false;
+            this.textContent = 'Show Image';
+        } else {
+            map.addLayer(wplaceTileLayer);
+            imageVisible = true;
+            this.textContent = 'Hide Image';
+        }
+    });
+    loadWplaceTile(1024, 1024); // Load center tile as initial test
     
     // Center on test pixels
     centerOnPixelsBtn.addEventListener('click', function() {
