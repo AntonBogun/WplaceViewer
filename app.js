@@ -24,9 +24,9 @@ let downloadingTiles = new Set();
 let downloadedTiles = new Set();
 
 
-// let tileTimestamps = new Map(); // Track when tiles were downloaded
-// let autoRefreshEnabled = true; // Whether to auto-redownload old tiles
-// const TILE_REFRESH_HOURS = 1; // Hours before considering a tile stale
+let tileTimestamps = new Map(); // Track when tiles were downloaded
+let autoRefreshEnabled = true; // Whether to auto-redownload old tiles
+const TILE_REFRESH_HOURS = 1; // Hours before considering a tile stale
 
 let emptyTiles = new Set();
 let lastDownloadTime = 0;
@@ -35,19 +35,26 @@ const MAX_CONCURRENT_DOWNLOADS = 3;
 let activeDownloads = 0;
 let tileStatusOverlays = new Map(); // For showing download status
 
+let downloadsPaused = false; // Whether to pause automatic downloading
+
+let favoritePixels = new Map(); // Store favorite pixels: key -> {tileX, tileY, pixelX, pixelY, name, timestamp}
+let favoriteMarkers = new Map(); // Visual markers for favorites
+
 //make tiles available
 window.loadedTiles = loadedTiles;
 window.downloadedTiles = downloadedTiles;
 window.emptyTiles = emptyTiles;
 window.downloadingTiles = downloadingTiles;
 window.tileStatusOverlays = tileStatusOverlays;
+window.tileTimestamps = tileTimestamps;
+window.favoritePixels = favoritePixels;
+window.favoriteMarkers = favoriteMarkers;
 
 // Check if we're running in Electron
 function isElectron() {
     return typeof window.electronAPI !== 'undefined' && window.electronAPI.isElectron;
 }
 
-// Replace loadDownloadedTilesList function
 async function loadDownloadedTilesList() {
     if (isElectron()) {
         try {
@@ -58,25 +65,36 @@ async function loadDownloadedTilesList() {
             // Handle both old format (array) and new format (object)
             if (Array.isArray(parsed)) {
                 downloadedTiles = new Set(parsed);
-                window.downloadedTiles = downloadedTiles;
                 emptyTiles = new Set();
+                tileTimestamps = new Map(); // No timestamps for old data
+                favoritePixels = new Map(); // No favorites for old data
+                window.downloadedTiles = downloadedTiles;
                 window.emptyTiles = emptyTiles;
+                window.tileTimestamps = tileTimestamps;
+                window.favoritePixels = favoritePixels;
             } else {
                 downloadedTiles = new Set(parsed.downloaded || []);
-                window.downloadedTiles = downloadedTiles;
                 emptyTiles = new Set(parsed.empty || []);
+                // Load timestamps
+                tileTimestamps = new Map(Object.entries(parsed.timestamps || {}));
+                favoritePixels = new Map(Object.entries(parsed.favorites || {}));
+                window.downloadedTiles = downloadedTiles;
                 window.emptyTiles = emptyTiles;
+                window.tileTimestamps = tileTimestamps;
+                window.favoritePixels = favoritePixels;
             }
             
             updateStatus(`Loaded ${downloadedTiles.size} downloaded tiles (${emptyTiles.size} empty) from cache`);
         } catch (error) {
             console.log('No existing downloaded tiles cache found');
             downloadedTiles = new Set();
-            window.downloadedTiles = downloadedTiles;
             emptyTiles = new Set();
+            tileTimestamps = new Map();
+            window.downloadedTiles = downloadedTiles;
             window.emptyTiles = emptyTiles;
+            window.tileTimestamps = tileTimestamps;
         }
-    }else{
+    } else {
         console.log("Not running in Electron, skipping loading downloaded tiles list");
     }
 }
@@ -136,7 +154,8 @@ async function saveDownloadedTilesList() {
         try {
             const data = {
                 downloaded: Array.from(downloadedTiles),
-                empty: Array.from(emptyTiles)
+                empty: Array.from(emptyTiles),
+                timestamps: Object.fromEntries(tileTimestamps)
             };
             
             const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
@@ -145,6 +164,16 @@ async function saveDownloadedTilesList() {
             console.error('Failed to save downloaded tiles list:', error);
         }
     }
+}
+function isTileStale(tileKey) {
+    if (!autoRefreshEnabled) return false;
+    
+    const timestamp = tileTimestamps.get(tileKey);
+    if (!timestamp) return true; // No timestamp = needs download
+    
+    const now = Date.now();
+    const ageHours = (now - timestamp) / (1000 * 60 * 60);
+    return ageHours > TILE_REFRESH_HOURS;
 }
 
 // Create distributed directory structure
@@ -198,7 +227,7 @@ function prioritizeTiles(visibleTiles) {
 async function downloadTile(tileX, tileY) {
     const tileKey = `${tileX}-${tileY}`;
     
-    if (downloadedTiles.has(tileKey) || downloadingTiles.has(tileKey)) {
+    if ((downloadedTiles.has(tileKey) || downloadingTiles.has(tileKey)) && !isTileStale(tileKey)) {
         return false; // Already downloaded or downloading
     }
     // return false; // TEMP DISABLE
@@ -216,6 +245,7 @@ async function downloadTile(tileX, tileY) {
         if (response.status === 404) {
             // Tile is empty, mark as downloaded but don't save file
             downloadedTiles.add(tileKey);
+            tileTimestamps.set(tileKey, Date.now()); // Add this line
             emptyTiles.add(tileKey);
             downloadingTiles.delete(tileKey);
             activeDownloads--;
@@ -248,6 +278,7 @@ async function downloadTile(tileX, tileY) {
         
         // Mark as downloaded
         downloadedTiles.add(tileKey);
+        tileTimestamps.set(tileKey, Date.now()); // Add this line
         downloadingTiles.delete(tileKey);
         activeDownloads--;
         
@@ -383,6 +414,10 @@ async function processDownloadQueue() {
 }
 
 function queueTileDownloads() {
+    if (downloadsPaused) {
+        return; // Don't queue anything if downloads are paused
+    }
+
     const pixelSize = calculatePixelSizeOnScreen();
     if (pixelSize < MIN_PIXEL_SIZE) {
         // Clear queue if pixels are too small
@@ -398,7 +433,7 @@ function queueTileDownloads() {
     // Add undownloaded tiles to queue
     prioritizedTiles.forEach(tile => {
         const tileKey = `${tile.tileX}-${tile.tileY}`;
-        if (!downloadedTiles.has(tileKey) && !downloadingTiles.has(tileKey)) {
+        if ((!downloadedTiles.has(tileKey) || isTileStale(tileKey)) && !downloadingTiles.has(tileKey)) {
             // Check if already in queue
             const alreadyQueued = downloadQueue.some(queuedTile => 
                 queuedTile.tileX === tile.tileX && queuedTile.tileY === tile.tileY
@@ -832,6 +867,37 @@ function setupControls() {
         map.setView(centerCoords, 15);
         updateStatus('Centered on test pixels');
     });
+    // Auto-refresh toggle
+    const toggleAutoRefreshBtn = document.getElementById('toggleAutoRefresh');
+    toggleAutoRefreshBtn.addEventListener('click', function() {
+        autoRefreshEnabled = !autoRefreshEnabled;
+        this.textContent = `Auto-Refresh: ${autoRefreshEnabled ? 'ON' : 'OFF'}`;
+        updateStatus(`Auto-refresh ${autoRefreshEnabled ? 'enabled' : 'disabled'}`);
+        
+        if (autoRefreshEnabled) {
+            queueTileDownloads(); // Re-queue stale tiles
+        }
+    });
+
+    // Pause/Resume downloads
+    const cancelDownloadsBtn = document.getElementById('cancelDownloads');
+    cancelDownloadsBtn.addEventListener('click', function() {
+        downloadsPaused = !downloadsPaused;
+        
+        if (downloadsPaused) {
+            // Clear current queue and stop future downloads
+            downloadQueue = [];
+            this.textContent = 'Resume Downloads';
+            updateStatus('Downloads paused - map movements will not trigger new downloads');
+        } else {
+            // Resume downloads and queue current view
+            this.textContent = 'Pause Downloads';
+            updateStatus('Downloads resumed');
+            queueTileDownloads(); // Start downloading current view
+        }
+        
+        updateMapInfo();
+    });
 }
 
 function addGridToCurrentView() {
@@ -992,7 +1058,8 @@ function updateMapInfo() {
         `(${wplaceBounds.topLeft.tileX},${wplaceBounds.topLeft.tileY},${wplaceBounds.topLeft.pixelX},${wplaceBounds.topLeft.pixelY}) to (${wplaceBounds.bottomRight.tileX},${wplaceBounds.bottomRight.tileY},${wplaceBounds.bottomRight.pixelX},${wplaceBounds.bottomRight.pixelY})` :
         'Out of bounds';
     document.getElementById('containerPixelInfo').textContent = `(${containerBounds.min.x}, ${containerBounds.min.y}) to (${containerBounds.max.x}, ${containerBounds.max.y})`;
-    document.getElementById('downloadInfo').textContent = `${downloadedTiles.size} downloaded, ${activeDownloads} active`;
+    const staleCount = Array.from(downloadedTiles).filter(tileKey => isTileStale(tileKey)).length;
+    document.getElementById('downloadInfo').textContent = `${downloadedTiles.size} downloaded (${staleCount} stale), ${activeDownloads} active`;
     document.getElementById('queueInfo').textContent = `${downloadQueue.length} queued`;
 }
 
