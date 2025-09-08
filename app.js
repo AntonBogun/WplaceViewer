@@ -39,6 +39,9 @@ let downloadsPaused = false; // Whether to pause automatic downloading
 
 let favoritePixels = new Map(); // Store favorite pixels: key -> {tileX, tileY, pixelX, pixelY, name, timestamp}
 let favoriteMarkers = new Map(); // Visual markers for favorites
+let favoriteLayer; // Layer group for favorite markers
+let favoritesVisible = true; // Whether favorites are currently shown
+
 
 //make tiles available
 window.loadedTiles = loadedTiles;
@@ -155,7 +158,8 @@ async function saveDownloadedTilesList() {
             const data = {
                 downloaded: Array.from(downloadedTiles),
                 empty: Array.from(emptyTiles),
-                timestamps: Object.fromEntries(tileTimestamps)
+                timestamps: Object.fromEntries(tileTimestamps),
+                favorites: Object.fromEntries(favoritePixels)
             };
             
             const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
@@ -163,6 +167,121 @@ async function saveDownloadedTilesList() {
         } catch (error) {
             console.error('Failed to save downloaded tiles list:', error);
         }
+    }
+}
+function createFavoriteKey(tileX, tileY, pixelX, pixelY) {
+    return `${tileX}-${tileY}-${pixelX}-${pixelY}`;
+}
+function createFavoriteLayer() {
+    favoriteLayer = L.layerGroup();
+    favoriteLayer.addTo(map);
+    window.favoriteLayer = favoriteLayer;
+}
+
+function addFavorite(wplaceCoords, name = null) {
+    const key = createFavoriteKey(wplaceCoords.tileX, wplaceCoords.tileY, wplaceCoords.pixelX, wplaceCoords.pixelY);
+    
+    if (!name) {
+        // name = prompt(`Name for favorite at Tile(${wplaceCoords.tileX},${wplaceCoords.tileY}) Pixel(${wplaceCoords.pixelX},${wplaceCoords.pixelY}):`);
+        const latlong = wplaceToLatLng(wplaceCoords.tileX, wplaceCoords.tileY, wplaceCoords.pixelX, wplaceCoords.pixelY);
+        name=`Lat ${latlong[0].toFixed(5)}, Lng ${latlong[1].toFixed(5)}, Tile(${wplaceCoords.tileX},${wplaceCoords.tileY}) Pixel(${wplaceCoords.pixelX},${wplaceCoords.pixelY})`;
+        if (!name) return; // User cancelled
+    }
+    
+    const favorite = {
+        tileX: wplaceCoords.tileX,
+        tileY: wplaceCoords.tileY,
+        pixelX: wplaceCoords.pixelX,
+        pixelY: wplaceCoords.pixelY,
+        name: name,
+        timestamp: Date.now()
+    };
+    
+    favoritePixels.set(key, favorite);
+    createFavoriteMarker(favorite);
+    saveDownloadedTilesList();
+    updateStatus(`Added favorite: ${name}`);
+    updateFavoriteButton();
+}
+
+function removeFavorite(wplaceCoords) {
+    const key = createFavoriteKey(wplaceCoords.tileX, wplaceCoords.tileY, wplaceCoords.pixelX, wplaceCoords.pixelY);
+    
+    if (favoritePixels.has(key)) {
+        const favorite = favoritePixels.get(key);
+        favoritePixels.delete(key);
+        
+        // Remove marker
+        if (favoriteMarkers.has(key)) {
+            favoriteLayer.removeLayer(favoriteMarkers.get(key)); // Changed from map.removeLayer()
+            favoriteMarkers.delete(key);
+        }
+        
+        saveDownloadedTilesList();
+        updateStatus(`Removed favorite: ${favorite.name}`);
+        updateFavoriteButton();
+    }
+}
+
+function isFavorite(wplaceCoords) {
+    const key = createFavoriteKey(wplaceCoords.tileX, wplaceCoords.tileY, wplaceCoords.pixelX, wplaceCoords.pixelY);
+    return favoritePixels.has(key);
+}
+
+function createFavoriteMarker(favorite) {
+    const key = createFavoriteKey(favorite.tileX, favorite.tileY, favorite.pixelX, favorite.pixelY);
+    
+    // Remove existing marker if any
+    if (favoriteMarkers.has(key)) {
+        favoriteLayer.removeLayer(favoriteMarkers.get(key));
+    }
+    
+    const [lat, lng] = wplaceToLatLng(favorite.tileX, favorite.tileY, favorite.pixelX, favorite.pixelY);
+    
+    const marker = L.marker([lat, lng], {
+        icon: L.divIcon({
+            className: 'favorite-marker',
+            html: '★',
+            iconSize: [20, 20],
+            iconAnchor: [10, 10]
+        }),
+        title: favorite.name
+    });
+    
+    // Click to zoom to this favorite
+    marker.on('click', function() {
+        const coords = wplaceToLatLng(favorite.tileX, favorite.tileY, favorite.pixelX, favorite.pixelY);
+        map.setView(coords, 15);
+        selectPixel(favorite, { lat: coords[0], lng: coords[1] });
+        updateStatus(`Zoomed to favorite: ${favorite.name}`);
+    });
+    
+    favoriteLayer.addLayer(marker); // Changed from map.addTo()
+    favoriteMarkers.set(key, marker);
+}
+
+function loadAllFavorites() {
+    favoritePixels.forEach(favorite => {
+        createFavoriteMarker(favorite);
+    });
+    updateStatus(`Loaded ${favoritePixels.size} favorites`);
+}
+
+function updateFavoriteButton() {
+    const favoriteBtn = document.getElementById('favoritePixel');
+    
+    if (!selectedPixel) {
+        favoriteBtn.disabled = true;
+        favoriteBtn.textContent = '★ Favorite';
+        return;
+    }
+    
+    favoriteBtn.disabled = false;
+    
+    if (isFavorite(selectedPixel)) {
+        favoriteBtn.textContent = '★ Unfavorite';
+    } else {
+        favoriteBtn.textContent = '★ Favorite';
     }
 }
 function isTileStale(tileKey) {
@@ -766,6 +885,7 @@ function initializeMap() {
     createPixelLayer();
     setupMapLimits();
     createWplaceTileLayer();
+    createFavoriteLayer();
 
     updateStatus('Map initialized');
 }
@@ -898,6 +1018,33 @@ function setupControls() {
         
         updateMapInfo();
     });
+    // Favorite pixel button
+    const favoriteBtn = document.getElementById('favoritePixel');
+    favoriteBtn.addEventListener('click', function() {
+        if (!selectedPixel) return;
+        
+        if (isFavorite(selectedPixel)) {
+            removeFavorite(selectedPixel);
+        } else {
+            addFavorite(selectedPixel);
+        }
+    });
+    // Toggle favorites
+    const toggleFavoritesBtn = document.getElementById('toggleFavorites');
+    toggleFavoritesBtn.addEventListener('click', function() {
+        if (favoritesVisible) {
+            map.removeLayer(favoriteLayer);
+            favoritesVisible = false;
+            this.textContent = 'Show Favorites';
+            updateStatus('Favorites hidden');
+        } else {
+            map.addLayer(favoriteLayer);
+            favoritesVisible = true;
+            this.textContent = 'Hide Favorites';
+            updateStatus('Favorites shown');
+        }
+    });
+
 }
 
 function addGridToCurrentView() {
@@ -974,6 +1121,7 @@ function setupEventListeners() {
         updateMapInfo();
         updateTileStatusDisplay();
         updateVisibleTiles(); // Manage visible tiles efficiently
+        loadAllFavorites(); // Add this line
         queueTileDownloads();
     });
     
@@ -1033,6 +1181,7 @@ function selectPixel(wplaceCoords, latlng) {
     
     // Update selection info
     updateSelectionInfo();
+    updateFavoriteButton(); // Add this line
 }
 
 function updateSelectionInfo() {
