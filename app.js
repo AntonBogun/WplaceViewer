@@ -8,27 +8,66 @@ let selectedPixel = null;
 let selectionHighlight = null;
 
 // wplace coordinate conversion constants
-const WORLD_MIN = { x: -180, y: 85.05112122634179 };
-const WORLD_MAX = { x: 180, y: -85.05112122634179 };
-const R_x = (2048 * 1000) / (WORLD_MAX.x - WORLD_MIN.x);
-const R_y = 325949.48201;
 const mapSize = 2048000; // Total pixels in Web Mercator at max zoom (2048 tiles * 1000 pixels each)
-
-// let wplaceTileLayer;
-// let currentZoom = 0;
-// let loadedTiles = new Map(); // Cache for loaded tile images
-// const MIN_PIXEL_SIZE = 2.5; // Minimum pixel size in screen pixels before we hide tiles
+const tileSize = 1000; // Each wplace tile is 1000x1000 pixels
+const WORLD_MIN = { x: -180, y: -85.05112878 }; // Web Mercator bounds
+const WORLD_MAX = { x: 180, y: 85.05112878 };
+let wplaceTileLayer;
+let loadedTiles = new Map(); // Cache for loaded tile images
+const MIN_PIXEL_SIZE = 2.5; // Minimum pixel size in screen pixels before we hide tiles
+function createWplaceTileLayer() {
+    wplaceTileLayer = L.layerGroup();
+    wplaceTileLayer.addTo(map);
+}
+function loadWplaceTile(tileX, tileY) {
+    const tileKey = `${tileX}-${tileY}`;
+    
+    // Check if already loaded
+    if (loadedTiles.has(tileKey)) {
+        return loadedTiles.get(tileKey);
+    }
+    
+    // Calculate tile bounds
+    const [topLat, leftLng] = wplaceToLatLng(tileX, tileY, 0, 0);
+    const [bottomLat, rightLng] = wplaceToLatLng(tileX, tileY, 999, 999);
+    
+    // Create image overlay
+    const tilePath = `tiles/${tileX}_${tileY}.png`; // Adjust path as needed
+    
+    const imageOverlay = L.imageOverlay(tilePath, [
+        [bottomLat, leftLng], // southwest corner
+        [topLat, rightLng]    // northeast corner
+    ], {
+        opacity: 1.0,
+        interactive: false,
+        crossOrigin: 'anonymous'
+    });
+    
+    // Handle load events
+    imageOverlay.on('load', function() {
+        updateStatus(`Loaded tile ${tileX},${tileY}`);
+    });
+    
+    imageOverlay.on('error', function() {
+        console.log(`Failed to load tile ${tileX},${tileY}`);
+        loadedTiles.delete(tileKey);
+    });
+    
+    loadedTiles.set(tileKey, imageOverlay);
+    return imageOverlay;
+}
 
 // Get current map view
 function getCurrentMapState() {
     const center = map.getCenter();
     const zoom = map.getZoom();
     const bounds = map.getBounds();
-    
+    const pixelWorldBounds = map.getPixelWorldBounds();
     return {
         centerLat: center.lat,
         centerLng: center.lng,
         zoom: zoom,
+        worldPixels: pixelWorldBounds.max,
         northEast: bounds.getNorthEast(),
         southWest: bounds.getSouthWest()
     };
@@ -67,18 +106,6 @@ function createPixelLayer() {
     addTestPixels();
 }
 
-// wplace coordinate conversion functions
-function h(x) {
-    return (2 * (Math.atan(Math.exp(x / R_y)) - Math.PI / 4)) * 180 / Math.PI;
-}
-
-function wplaceToLatLng(x, y, z, w) {
-    // x,y are tile coordinates, z,w are pixel coordinates within the tile
-    // This should give us the TOP-LEFT corner of the pixel
-    const lng = WORLD_MIN.x + (x * 1000 + z) / R_x;
-    const lat = -h(y * 1000 + w - 2048 * (1000 / 2));
-    return [lat, lng];
-}
 
 
 function latLonToPixel(lat, lon) {
@@ -94,9 +121,22 @@ function latLonToPixel(lat, lon) {
     
     // Y coordinate (latitude uses Mercator projection)
     const y = (1 - (Math.log(Math.tan(latRad) + 1/Math.cos(latRad)) / Math.PI)) / 2 * mapSize;
-    
-    return {x: Math.floor(x), y: Math.floor(y)};
+
+    return [Math.floor(x), Math.floor(y)];
 }
+function latLngToWplace(lat, lon) {
+    const [x, y] = latLonToPixel(lat, lon);
+    if (x < 0 || x > mapSize || y < 0 || y > mapSize) {
+        return null; // Out of bounds
+    }
+    const tileX = Math.floor(x / tileSize);
+    const tileY = Math.floor(y / tileSize);
+    const pixelX = x % tileSize;
+    const pixelY = y % tileSize;
+    return { tileX, tileY, pixelX, pixelY };
+}
+
+
 function pixelToLatLon(x, y) {
     // Convert pixel to normalized coordinates (0-1)
     const xNorm = x / mapSize;
@@ -109,7 +149,43 @@ function pixelToLatLon(x, y) {
     const latRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * yNorm)));
     const lat = latRad * 180 / Math.PI;
     
-    return {lat: lat, lon: lon};
+    return [lat, lon];
+}
+
+function wplaceToLatLng(tileX, tileY, pixelX, pixelY) {
+    return pixelToLatLon(
+        tileX * tileSize + pixelX,
+        tileY * tileSize + pixelY
+    );
+}
+function getContainerMapPixels() {
+    const worldBounds = map.getPixelWorldBounds();
+    if (!worldBounds) return null;
+    if(worldBounds.min.x >1 || worldBounds.min.y >1) {
+        console.warn("Unexpected world bounds:", worldBounds);
+    }
+    return {
+        width:worldBounds.max.x,
+        height:worldBounds.max.y
+    };
+}
+function containerToWplace(containerX, containerY) {
+    const scale = getContainerMapPixels();
+    const wplaceX = Math.floor(containerX / scale.width*mapSize);
+    const wplaceY = Math.floor(containerY / scale.height*mapSize);
+    const tileX = Math.floor(wplaceX / tileSize);
+    const tileY = Math.floor(wplaceY / tileSize);
+    const pixelX = wplaceX % tileSize;
+    const pixelY = wplaceY % tileSize;
+    return { tileX, tileY, pixelX, pixelY };
+}
+function wplaceToContainer(tileX, tileY, pixelX, pixelY) {
+    const wplaceX = tileX * tileSize + pixelX;
+    const wplaceY = tileY * tileSize + pixelY;
+    const scale = getContainerMapPixels();
+    const containerX = (wplaceX / mapSize) * scale.width;
+    const containerY = (wplaceY / mapSize) * scale.height;
+    return { containerX, containerY };
 }
 
 function addTestPixels() {
@@ -180,6 +256,8 @@ function initializeMap() {
         zoomControl: false, // We'll add custom controls
         attributionControl: true
     });
+    //add to window
+    window.map = map;
 
     // Add zoom control in bottom right
     L.control.zoom({
@@ -458,10 +536,19 @@ function updateSelectionInfo() {
 function updateMapInfo() {
     const zoom = map.getZoom();
     const center = map.getCenter();
-    
-    document.getElementById('zoomLevel').textContent = zoom.toFixed(1);
-    document.getElementById('centerCoords').textContent = 
-        `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
+    const pixelBounds = map.getPixelWorldBounds();
+    const containerBounds = map.getPixelBounds();
+    const wplaceBounds = {
+        topLeft: containerToWplace(containerBounds.min.x, containerBounds.min.y),
+        bottomRight: containerToWplace(containerBounds.max.x, containerBounds.max.y)
+    }
+
+    document.getElementById('zoomLevel').textContent = `${zoom.toFixed(1)} (${pixelBounds.max.x}, ${pixelBounds.max.y})`;
+    document.getElementById('centerCoords').textContent = `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
+    document.getElementById('wplaceSpanInfo').textContent = wplaceBounds.topLeft && wplaceBounds.bottomRight ?
+        `(${wplaceBounds.topLeft.tileX},${wplaceBounds.topLeft.tileY},${wplaceBounds.topLeft.pixelX},${wplaceBounds.topLeft.pixelY}) to (${wplaceBounds.bottomRight.tileX},${wplaceBounds.bottomRight.tileY},${wplaceBounds.bottomRight.pixelX},${wplaceBounds.bottomRight.pixelY})` :
+        'Out of bounds';
+    document.getElementById('containerPixelInfo').textContent = `(${containerBounds.min.x}, ${containerBounds.min.y}) to (${containerBounds.max.x}, ${containerBounds.max.y})`;
 }
 
 function updateMouseInfo(e) {
@@ -486,68 +573,8 @@ function updateMouseInfo(e) {
     }
 }
 
-// Convert lat/lng back to wplace coordinates
-function latLngToWplace(lat, lng) {
-    // Check if we're within bounds first
-    if (lat > WORLD_MIN.y || lat < WORLD_MAX.y || lng < WORLD_MIN.x || lng > WORLD_MAX.x) {
-        return null;
-    }
-    
-    // Forward conversion from lng to x_pixel
-    const x_pixel = (lng - WORLD_MIN.x) * R_x;
-    
-    // Forward conversion from lat to y_pixel using inverse of h function
-    // lat = -h(y_pixel - 2048 * 500), so h_input = y_pixel - 2048 * 500
-    // h(x) = (2 * (atan(exp(x / R_y)) - π/4)) * 180/π
-    // So: lat = -(2 * (atan(exp((y_pixel - 1024000) / R_y)) - π/4)) * 180/π
-    // Solving for y_pixel:
-    const lat_rad = -lat * Math.PI / 180;
-    const h_input = R_y * Math.log(Math.tan(Math.PI / 4 + lat_rad / 2));
-    const y_pixel = h_input + 2048 * 500;
-    
-    // Calculate tile and pixel within tile
-    const tileX = Math.floor(x_pixel / 1000);
-    const tileY = Math.floor(y_pixel / 1000);
-    const pixelX = Math.floor(x_pixel % 1000);
-    const pixelY = Math.floor(y_pixel % 1000);
-    
-    // Ensure we're within the 2048x2048 tile grid
-    if (tileX < 0 || tileX >= 2048 || tileY < 0 || tileY >= 2048) {
-        return null;
-    }
-    
-    return {
-        tileX: tileX,
-        tileY: tileY,
-        pixelX: pixelX,
-        pixelY: pixelY
-    };
-}
 
 function updateStatus(message) {
     document.getElementById('loadStatus').textContent = message;
     console.log(`Status: ${message}`);
-}
-
-// Utility function to convert coordinates to wplace tile coordinates
-// This will be useful when we add wplace data
-function coordsToWplaceTile(lat, lng, zoom) {
-    // This is where you'll implement the conversion from lat/lng to wplace tile coordinates
-    // For now, just a placeholder
-    return {
-        x: Math.floor((lng + 180) / 360 * Math.pow(2, zoom)),
-        y: Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, zoom)),
-        z: zoom
-    };
-}
-
-// Function to load wplace tiles (placeholder for now)
-function loadWplaceTiles() {
-    // This is where you'll implement loading your downloaded wplace tiles
-    // You could:
-    // 1. Load them from local files
-    // 2. Create a custom Leaflet layer
-    // 3. Overlay them on the base map
-    
-    updateStatus('Ready to implement wplace tile loading');
 }

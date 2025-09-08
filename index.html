@@ -80,15 +80,22 @@
 
         .status-bar {
             position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(0, 0, 0, 0.9);
-            padding: 8px 15px;
-            font-size: 11px;
+            left: 50%;
+            bottom: 24px;
+            transform: translateX(-50%);
+            background: #fff;
+            color: #222;
+            padding: 10px 32px;
+            font-size: 13px;
+            border-radius: 18px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.12);
             display: flex;
-            justify-content: space-between;
+            align-items: center;
+            gap: 32px;
+            min-width: 320px;
+            max-width: 80vw;
             z-index: 1000;
+            border: 1px solid #eee;
         }
     </style>
 </head>
@@ -121,6 +128,8 @@
         <div class="info-item">Mouse: <span id="mouseCoords">-</span></div>
         <div class="info-item">wplace Tile: <span id="wplaceTileInfo">-</span></div>
         <div class="info-item">wplace Pixel: <span id="wplacePixelInfo">-</span></div>
+        <div class="info-item">wplace Span: <span id="wplaceSpanInfo">-</span></div>
+        <div class="info-item">container Pixel: <span id="containerPixelInfo">-</span></div>
     </div>
 
     <div class="status-bar">
