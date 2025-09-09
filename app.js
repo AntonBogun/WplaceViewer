@@ -567,7 +567,18 @@ function queueTileDownloads() {
     
     const visibleTiles = viewInfo.visibleTiles;
     
-    // Handle wraparound case
+    // Get current view center for distance calculation - use ACTUAL coordinates
+    const center = map.getCenter();
+    const centerWplace = latLngToWplace(center.lat, center.lng);
+    if (!centerWplace) return;
+    
+    // Use the actual tile coordinates for distance, not normalized
+    const centerTileX = centerWplace.tileX;
+    const centerTileY = centerWplace.tileY;
+    
+    // Collect tiles to download
+    const tilesToQueue = [];
+    
     for (let tileX = visibleTiles.startX; tileX <= visibleTiles.endX; tileX++) {
         for (let tileY = visibleTiles.startY; tileY <= visibleTiles.endY; tileY++) {
             // Skip out of vertical bounds
@@ -589,19 +600,22 @@ function queueTileDownloads() {
                 );
                 
                 if (!alreadyQueued) {
-                    const distance = calculateTileDistance(normalizedTileX, normalizedTileY, 1024, 1024);
-                    downloadQueue.push({ 
-                        tileX: normalizedTileX, // Store normalized coordinates
+                    // Use VISUAL coordinates for distance calculation
+                    const distance = calculateTileDistance(tileX, tileY, centerTileX, centerTileY);
+                    tilesToQueue.push({ 
+                        tileX: normalizedTileX, // Still store normalized for download
                         tileY: normalizedTileY, 
-                        distance 
+                        distance // But distance is based on visual position
                     });
                 }
             }
         }
     }
     
-    // Sort by distance and start processing
+    // Add to queue and sort by distance
+    downloadQueue.push(...tilesToQueue);
     downloadQueue.sort((a, b) => a.distance - b.distance);
+    
     processDownloadQueue();
 }
 
@@ -716,16 +730,37 @@ function getWplaceViewInfo() {
     const bounds = map.getBounds();
     const topLeft = latLngToWplace(bounds.getNorth(), bounds.getWest());
     const bottomRight = latLngToWplace(bounds.getSouth(), bounds.getEast());
+    // Handle cases where we're partially out of bounds
+    if (!topLeft && !bottomRight) {
+        return { visibleTiles: null };
+    }
+    
+    // If one corner is out of bounds, clamp to valid range
+    let startY, endY;
+    if (topLeft && bottomRight) {
+        startY = Math.max(0, Math.floor(topLeft.tileY));
+        endY = Math.min(2047, Math.ceil(bottomRight.tileY));
+    } else if (topLeft) {
+        startY = Math.max(0, Math.floor(topLeft.tileY));
+        endY = 2047;
+    } else if (bottomRight) {
+        startY = 0;
+        endY = Math.min(2047, Math.ceil(bottomRight.tileY));
+    }
+    
+    // X coordinates can wrap around, so use the raw values
+    const startX = topLeft ? Math.floor(topLeft.tileX) : Math.floor(bottomRight.tileX);
+    const endX = bottomRight ? Math.ceil(bottomRight.tileX) : Math.ceil(topLeft.tileX);
     
     return {
         topLeft: topLeft,
         bottomRight: bottomRight,
-        visibleTiles: topLeft && bottomRight ? {
-            startX: Math.floor(topLeft.tileX),
-            endX: Math.ceil(bottomRight.tileX),
-            startY: Math.floor(topLeft.tileY),
-            endY: Math.ceil(bottomRight.tileY)
-        } : null
+        visibleTiles: {
+            startX: startX,
+            endX: endX,
+            startY: startY,
+            endY: endY
+        }
     };
 }
 
@@ -754,23 +789,44 @@ function latLonToPixel(lat, lon) {
     const latRad = lat * Math.PI / 180;
     const lonRad = lon * Math.PI / 180;
     
-    // X coordinate (longitude is linear) - DON'T clamp longitude
+    // X coordinate (longitude is linear)
     const x = (lonRad + Math.PI) / (2 * Math.PI) * mapSize;
     
     // Y coordinate (latitude uses Mercator projection)
-    const y = (1 - (Math.log(Math.tan(latRad) + 1/Math.cos(latRad)) / Math.PI)) / 2 * mapSize;
-
-    return [x, y]; // Remove Math.floor() to keep precision
-}
-function latLngToWplace(lat, lon) {
-    const [x, y] = latLonToPixel(lat, lon);
-    if (y < 0 || y > mapSize) {
-        return null; // Out of bounds
+    // Add bounds checking to prevent NaN/Infinity
+    const mercatorY = Math.log(Math.tan(latRad) + 1/Math.cos(latRad));
+    if (!isFinite(mercatorY)) {
+        return [x, lat > 0 ? 0 : mapSize]; // Return edge values for extreme cases
     }
+    
+    const y = (1 - (mercatorY / Math.PI)) / 2 * mapSize;
+
+    return [x, y];
+}
+function latLngToWplace(lat, lng) {
+    //clamp y to reasonable coords
+    const latClamped = Math.max(-85.05111026927486, Math.min(85.05111026927486, lat));
+    const [x, y] = latLonToPixel(latClamped, lng);
+    
+    // Only reject if clearly out of bounds
+    if (!isFinite(x) || !isFinite(y)) {
+        return null;
+    }
+    // Allow slight overshoot for edge cases
+    if (y < -5 || y > mapSize + 5) {
+        return null; 
+    }
+    
     const tileX = Math.floor(x / tileSize);
     const tileY = Math.floor(y / tileSize);
-    const pixelX = x % tileSize;
-    const pixelY = y % tileSize;
+    const pixelX = Math.floor(x % tileSize);
+    const pixelY = Math.floor(y % tileSize);
+    
+    // Ensure tile coordinates are valid
+    if (tileY < 0 || tileY >= 2048) {
+        return null;
+    }
+    
     return { tileX, tileY, pixelX, pixelY };
 }
 function normalizeWplaceTileX(tileX) {
