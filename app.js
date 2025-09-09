@@ -104,7 +104,6 @@ async function loadDownloadedTilesList() {
 function updateVisibleTiles() {
     const pixelSize = calculatePixelSizeOnScreen();
     if (pixelSize < MIN_PIXEL_SIZE) {
-        // Remove all tile overlays when zoomed out too far
         wplaceTileLayer.clearLayers();
         loadedTiles.clear();
         return;
@@ -120,16 +119,21 @@ function updateVisibleTiles() {
     const visibleTiles = viewInfo.visibleTiles;
     const currentlyVisible = new Set();
     
-    // Load visible downloaded tiles
+    // Load visible downloaded tiles (including wrapped)
     for (let tileX = visibleTiles.startX; tileX <= visibleTiles.endX; tileX++) {
         for (let tileY = visibleTiles.startY; tileY <= visibleTiles.endY; tileY++) {
-            if (tileX >= 0 && tileX < 2048 && tileY >= 0 && tileY < 2048) {
+            if (tileY >= 0 && tileY < 2048) {
                 const tileKey = `${tileX}-${tileY}`;
                 currentlyVisible.add(tileKey);
                 
+                const normalizedTileX = normalizeWplaceTileX(tileX);
+                const normalizedTileKey = `${normalizedTileX}-${tileY}`;
+                
                 // Only load if downloaded and not already loaded
-                if (downloadedTiles.has(tileKey) && !loadedTiles.has(tileKey) && !emptyTiles.has(tileKey)) {
-                    loadWplaceTile(tileX, tileY);
+                if (downloadedTiles.has(normalizedTileKey) && 
+                    !loadedTiles.has(tileKey) && 
+                    !emptyTiles.has(normalizedTileKey)) {
+                    loadWplaceTile(tileX, tileY); // Use original coords
                 }
             }
         }
@@ -144,7 +148,6 @@ function updateVisibleTiles() {
         }
     });
     
-    // Clean up the loadedTiles map
     tilesToRemove.forEach(tileKey => {
         loadedTiles.delete(tileKey);
     });
@@ -287,8 +290,13 @@ function updateFavoriteButton() {
 function isTileStale(tileKey) {
     if (!autoRefreshEnabled) return false;
     
-    const timestamp = tileTimestamps.get(tileKey);
-    if (!timestamp) return true; // No timestamp = needs download
+    // Handle both normalized and original tile keys
+    const normalizedKey = tileKey.includes('-') ? 
+        `${normalizeWplaceTileX(parseInt(tileKey.split('-')[0]))}-${tileKey.split('-')[1]}` : 
+        tileKey;
+    
+    const timestamp = tileTimestamps.get(normalizedKey);
+    if (!timestamp) return true;
     
     const now = Date.now();
     const ageHours = (now - timestamp) / (1000 * 60 * 60);
@@ -344,7 +352,16 @@ function prioritizeTiles(visibleTiles) {
 }
 
 async function downloadTile(tileX, tileY) {
-    const tileKey = `${tileX}-${tileY}`;
+    const normalizedTileX = normalizeWplaceTileX(tileX);
+    const normalizedTileY = tileY;
+
+    // const tileKey = `${tileX}-${tileY}`;
+    // Skip if out of Y bounds
+    if (normalizedTileY < 0 || normalizedTileY >= 2048) {
+        return false;
+    }
+    
+    const tileKey = `${normalizedTileX}-${normalizedTileY}`;
     
     if ((downloadedTiles.has(tileKey) || downloadingTiles.has(tileKey)) && !isTileStale(tileKey)) {
         return false; // Already downloaded or downloading
@@ -485,7 +502,6 @@ function showTileStatus(tileX, tileY, status) {
 function updateTileStatusDisplay() {
     const pixelSize = calculatePixelSizeOnScreen();
     if (pixelSize < MIN_PIXEL_SIZE) {
-        // Clear all status overlays when zoomed out
         tileStatusOverlays.forEach(overlay => map.removeLayer(overlay));
         tileStatusOverlays.clear();
         return;
@@ -496,14 +512,17 @@ function updateTileStatusDisplay() {
     
     const visibleTiles = viewInfo.visibleTiles;
     
-    // Show status for all visible tiles
+    // Show status for all visible tiles (including wrapped)
     for (let tileX = visibleTiles.startX; tileX <= visibleTiles.endX; tileX++) {
         for (let tileY = visibleTiles.startY; tileY <= visibleTiles.endY; tileY++) {
-            const tileKey = `${tileX}-${tileY}`;
+            if (tileY < 0 || tileY >= 2048) continue;
             
-            if (downloadingTiles.has(tileKey)) {
-                showTileStatus(tileX, tileY, 'downloading');
-            } else if (!downloadedTiles.has(tileKey)) {
+            const normalizedTileX = normalizeWplaceTileX(tileX);
+            const normalizedTileKey = `${normalizedTileX}-${tileY}`;
+            
+            if (downloadingTiles.has(normalizedTileKey)) {
+                showTileStatus(tileX, tileY, 'downloading'); // Use original coords for display
+            } else if (!downloadedTiles.has(normalizedTileKey)) {
                 showTileStatus(tileX, tileY, 'needed');
             }
         }
@@ -534,12 +553,11 @@ async function processDownloadQueue() {
 
 function queueTileDownloads() {
     if (downloadsPaused) {
-        return; // Don't queue anything if downloads are paused
+        return;
     }
-
+    
     const pixelSize = calculatePixelSizeOnScreen();
     if (pixelSize < MIN_PIXEL_SIZE) {
-        // Clear queue if pixels are too small
         downloadQueue = [];
         return;
     }
@@ -547,24 +565,43 @@ function queueTileDownloads() {
     const viewInfo = getWplaceViewInfo();
     if (!viewInfo.visibleTiles) return;
     
-    const prioritizedTiles = prioritizeTiles(viewInfo.visibleTiles);
+    const visibleTiles = viewInfo.visibleTiles;
     
-    // Add undownloaded tiles to queue
-    prioritizedTiles.forEach(tile => {
-        const tileKey = `${tile.tileX}-${tile.tileY}`;
-        if ((!downloadedTiles.has(tileKey) || isTileStale(tileKey)) && !downloadingTiles.has(tileKey)) {
-            // Check if already in queue
-            const alreadyQueued = downloadQueue.some(queuedTile => 
-                queuedTile.tileX === tile.tileX && queuedTile.tileY === tile.tileY
-            );
+    // Handle wraparound case
+    for (let tileX = visibleTiles.startX; tileX <= visibleTiles.endX; tileX++) {
+        for (let tileY = visibleTiles.startY; tileY <= visibleTiles.endY; tileY++) {
+            // Skip out of vertical bounds
+            if (tileY < 0 || tileY >= 2048) continue;
             
-            if (!alreadyQueued) {
-                downloadQueue.push(tile);
+            // Normalize tile coordinates for download checking
+            const normalizedTileX = normalizeWplaceTileX(tileX);
+            const normalizedTileY = tileY;
+            const normalizedTileKey = `${normalizedTileX}-${normalizedTileY}`;
+            
+            // Check if we need to download this tile
+            if ((!downloadedTiles.has(normalizedTileKey) || isTileStale(normalizedTileKey)) && 
+                !downloadingTiles.has(normalizedTileKey)) {
+                
+                // Check if already in queue (use normalized coordinates)
+                const alreadyQueued = downloadQueue.some(queuedTile => 
+                    normalizeWplaceTileX(queuedTile.tileX) === normalizedTileX && 
+                    queuedTile.tileY === normalizedTileY
+                );
+                
+                if (!alreadyQueued) {
+                    const distance = calculateTileDistance(normalizedTileX, normalizedTileY, 1024, 1024);
+                    downloadQueue.push({ 
+                        tileX: normalizedTileX, // Store normalized coordinates
+                        tileY: normalizedTileY, 
+                        distance 
+                    });
+                }
             }
         }
-    });
+    }
     
-    // Start processing if not already running
+    // Sort by distance and start processing
+    downloadQueue.sort((a, b) => a.distance - b.distance);
     processDownloadQueue();
 }
 
@@ -581,44 +618,53 @@ function loadWplaceTile(tileX, tileY) {
         return loadedTiles.get(tileKey);
     }
     
+    // Normalize coordinates for file access
+    const normalizedTileX = normalizeWplaceTileX(tileX);
+    const normalizedTileY = tileY;
+    
+    // Skip if out of Y bounds
+    if (normalizedTileY < 0 || normalizedTileY >= 2048) {
+        return null;
+    }
+    
+    const normalizedTileKey = `${normalizedTileX}-${normalizedTileY}`;
+    
     // Skip if we know this tile is empty
-    if (emptyTiles && emptyTiles.has(tileKey)) {
+    if (emptyTiles && emptyTiles.has(normalizedTileKey)) {
         return null;
     }
     
     // Skip if not downloaded yet
-    if (!downloadedTiles.has(tileKey)) {
+    if (!downloadedTiles.has(normalizedTileKey)) {
         return null;
     }
     
-    // Calculate tile bounds
+    // Calculate tile bounds using original (non-normalized) coordinates
     const [topLat, leftLng] = wplaceToLatLng(tileX, tileY, 0, 0);
     const [bottomLat, rightLng] = wplaceToLatLng(tileX + 1, tileY + 1, 0, 0);
     
-    // Use the correct file path (distributed structure)
-    const tilePath = getTileFilePath(tileX, tileY);
-    
-    // Convert to file:// URL for Electron
+    // Use normalized coordinates for file path
+    const tilePath = getTileFilePath(normalizedTileX, normalizedTileY);
     const fileUrl = isElectron() ? `file://${tilePath}` : tilePath;
     
     const imageOverlay = L.imageOverlay(fileUrl, [
-        [bottomLat, leftLng], // southwest corner
-        [topLat, rightLng]    // northeast corner
+        [bottomLat, leftLng],
+        [topLat, rightLng]
     ], {
         opacity: 1.0,
         interactive: false,
         crossOrigin: 'anonymous'
     });
     
-    // Handle load events
-    imageOverlay.on('load', function() {
-        console.log(`Loaded tile ${tileX},${tileY} from file`);
-    });
+    // // Handle load events
+    // imageOverlay.on('load', function() {
+    //     console.log(`Loaded tile ${normalizedTileX},${normalizedTileY} from file`);
+    // });
     
-    imageOverlay.on('error', function() {
-        console.log(`Failed to load tile ${tileX},${tileY} from file`);
-        loadedTiles.delete(tileKey);
-    });
+    // imageOverlay.on('error', function() {
+    //     console.log(`Failed to load tile ${normalizedTileX},${normalizedTileY} from file`);
+    //     loadedTiles.delete(normalizedTileKey);
+    // });
     
     // Store and add to layer
     loadedTiles.set(tileKey, imageOverlay);
@@ -708,17 +754,17 @@ function latLonToPixel(lat, lon) {
     const latRad = lat * Math.PI / 180;
     const lonRad = lon * Math.PI / 180;
     
-    // X coordinate (longitude is linear)
+    // X coordinate (longitude is linear) - DON'T clamp longitude
     const x = (lonRad + Math.PI) / (2 * Math.PI) * mapSize;
     
     // Y coordinate (latitude uses Mercator projection)
     const y = (1 - (Math.log(Math.tan(latRad) + 1/Math.cos(latRad)) / Math.PI)) / 2 * mapSize;
 
-    return [Math.floor(x), Math.floor(y)];
+    return [x, y]; // Remove Math.floor() to keep precision
 }
 function latLngToWplace(lat, lon) {
     const [x, y] = latLonToPixel(lat, lon);
-    if (x < 0 || x > mapSize || y < 0 || y > mapSize) {
+    if (y < 0 || y > mapSize) {
         return null; // Out of bounds
     }
     const tileX = Math.floor(x / tileSize);
@@ -727,6 +773,10 @@ function latLngToWplace(lat, lon) {
     const pixelY = y % tileSize;
     return { tileX, tileY, pixelX, pixelY };
 }
+function normalizeWplaceTileX(tileX) {
+    // Wrap tile X coordinate to 0-2047 range
+    return ((tileX % 2048) + 2048) % 2048;
+}
 
 
 function pixelToLatLon(x, y) {
@@ -734,7 +784,7 @@ function pixelToLatLon(x, y) {
     const xNorm = x / mapSize;
     const yNorm = y / mapSize;
     
-    // Longitude (linear conversion)
+    // Longitude (linear conversion) - DON'T clamp
     const lon = (xNorm * 2 - 1) * 180;
     
     // Latitude (inverse Mercator projection)
@@ -846,11 +896,17 @@ function initializeMap() {
         center: [0, 0],
         zoom: 2,
         zoomControl: false, // We'll add custom controls
-        attributionControl: true
+        attributionControl: true,
+        worldCopyJump: true, // Seamless horizontal panning
+        maxBoundsViscosity: 1.0 // Keep this for vertical bounds
     });
+    const verticalBounds = L.latLngBounds(
+        [-85.05112878, -540], // Allow extra longitude range for wrapping
+        [85.05112878, 540]
+    );
+    map.setMaxBounds(verticalBounds);
     //add to window
     window.map = map;
-
     // Add zoom control in bottom right
     L.control.zoom({
         position: 'bottomright'
@@ -860,19 +916,23 @@ function initializeMap() {
     baseLayers = {
         osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors',
-            maxZoom: 19
+            maxZoom: 19,
+            noWrap: false
         }),
         satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
             attribution: '© Esri, Maxar, Earthstar Geographics',
-            maxZoom: 18
+            maxZoom: 18,
+            noWrap: false
         }),
         topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenTopoMap contributors',
-            maxZoom: 17
+            maxZoom: 17,
+            noWrap: false
         }),
         dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
             attribution: '© CARTO, © OpenStreetMap contributors',
-            maxZoom: 19
+            maxZoom: 19,
+            noWrap: false
         })
     };
 
@@ -883,7 +943,7 @@ function initializeMap() {
     // Create a grid overlay for tile boundaries (useful for debugging)
     createGridLayer();
     createPixelLayer();
-    setupMapLimits();
+    // setupMapLimits();
     createWplaceTileLayer();
     createFavoriteLayer();
 
