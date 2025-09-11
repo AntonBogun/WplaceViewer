@@ -146,15 +146,20 @@
         <div class="control-group">
             <button id="resetView">Reset View</button>
             <button id="toggleGrid">Toggle Grid</button>
-            <button id="togglePixels">Toggle Pixels</button>
-            <button id="centerOnPixels">Center on Test Pixels</button>
+            <!-- <button id="togglePixels">Toggle Pixels</button> -->
+            <!-- <button id="centerOnPixels">Center on Test Pixels</button> -->
             <button id="toggleFavorites">Toggle Favorites</button>
             <button id="favoritePixel" disabled>★ Favorite</button>
         </div>
         <div class="control-group">
-            <button id="toggleImage">Toggle Image</button>
+            <button id="toggleImage">Toggle Tiles</button>
             <button id="toggleAutoRefresh">Auto-Refresh: ON</button>
             <button id="cancelDownloads">Pause Downloads</button>
+        </div>
+        <div class="control-group">
+            <label for="tilesPerSecond">Tiles per second:</label>
+            <input type="range" id="tilesPerSecondSlider" min="0.1" max="10" step="0.1" value="1.8" style="width:120px;">
+            <input type="number" id="tilesPerSecondInput" min="0.1" max="10" step="0.1" value="1.8" style="width:60px;">
         </div>
     </div>
 
@@ -175,6 +180,19 @@
         <span>wplace Viewer - Click to select pixels</span>
         <span id="loadStatus">Ready</span>
     </div>
+    <button id="toggleMenuBtn" style="
+        position: absolute;
+        left: 10px;
+        bottom: 24px;
+        z-index: 1100;
+        background: #444;
+        color: white;
+        border: none;
+        border-radius: 18px;
+        padding: 10px 24px;
+        font-size: 14px;
+        cursor: pointer;
+    ">Hide Menu</button>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
     <script src="app.js"></script>

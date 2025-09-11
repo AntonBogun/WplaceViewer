@@ -2,7 +2,6 @@
 let map;
 let currentBaseLayer;
 let gridLayer;
-let pixelLayer;
 let baseLayers = {};
 let selectedPixel = null;
 let selectionHighlight = null;
@@ -20,8 +19,15 @@ const MIN_PIXEL_SIZE = 1/4; // Minimum pixel size in screen pixels before we hid
 
 
 let downloadQueue = [];
+//normalized tile keys
 let downloadingTiles = new Set();
+//normalized tile keys
 let downloadedTiles = new Set();
+let currentDownloadQueueID = 0;
+function stepDownloadQueueID() {
+    currentDownloadQueueID=(currentDownloadQueueID+1)%1000000;
+    return currentDownloadQueueID;
+}
 
 
 let tileTimestamps = new Map(); // Track when tiles were downloaded
@@ -30,10 +36,15 @@ const TILE_REFRESH_HOURS = 1; // Hours before considering a tile stale
 
 let emptyTiles = new Set();
 let lastDownloadTime = 0;
-const DOWNLOAD_RATE_LIMIT = 200; // milliseconds between downloads
-const MAX_CONCURRENT_DOWNLOADS = 3;
+// const DOWNLOAD_RATE_LIMIT = 200; // milliseconds between downloads
+
+
+// const MAX_CONCURRENT_DOWNLOADS = 3;
 let activeDownloads = 0;
+//expects unnormalized tilekey
 let tileStatusOverlays = new Map(); // For showing download status
+let getTilesPerSecond = () => 1.8;
+
 
 let downloadsPaused = false; // Whether to pause automatic downloading
 
@@ -180,6 +191,16 @@ function createFavoriteLayer() {
     favoriteLayer.addTo(map);
     window.favoriteLayer = favoriteLayer;
 }
+function createWplaceTileLayer() {
+    wplaceTileLayer = L.layerGroup();
+    window.wplaceTileLayer = wplaceTileLayer;
+    wplaceTileLayer.addTo(map);
+}
+function createGridLayer() {
+    gridLayer = L.layerGroup();
+    window.gridLayer = gridLayer;
+    gridLayer.addTo(map);//!is this even needed?
+}
 
 function addFavorite(wplaceCoords, name = null) {
     const key = createFavoriteKey(wplaceCoords.tileX, wplaceCoords.tileY, wplaceCoords.pixelX, wplaceCoords.pixelY);
@@ -234,9 +255,9 @@ function isFavorite(wplaceCoords) {
 function createFavoriteMarker(favorite) {
     const key = createFavoriteKey(favorite.tileX, favorite.tileY, favorite.pixelX, favorite.pixelY);
     
-    // Remove existing marker if any
     if (favoriteMarkers.has(key)) {
-        favoriteLayer.removeLayer(favoriteMarkers.get(key));
+        // favoriteLayer.removeLayer(favoriteMarkers.get(key));
+        return; // Already created
     }
     
     const [lat, lng] = wplaceToLatLng(favorite.tileX, favorite.tileY, favorite.pixelX, favorite.pixelY);
@@ -264,10 +285,14 @@ function createFavoriteMarker(favorite) {
 }
 
 function loadAllFavorites() {
+    let was_empty = favoriteMarkers.size === 0;
     favoritePixels.forEach(favorite => {
         createFavoriteMarker(favorite);
     });
-    updateStatus(`Loaded ${favoritePixels.size} favorites`);
+    if (was_empty && favoriteMarkers.size > 0) {
+        console.log(`Loaded ${favoriteMarkers.size} favorites`);
+        updateStatus(`Loaded ${favoriteMarkers.size} favorites`);
+    }
 }
 
 function updateFavoriteButton() {
@@ -288,15 +313,13 @@ function updateFavoriteButton() {
     }
 }
 function isTileStale(tileKey) {
-    if (!autoRefreshEnabled) return false;
-    
     // Handle both normalized and original tile keys
     const normalizedKey = tileKey.includes('-') ? 
         `${normalizeWplaceTileX(parseInt(tileKey.split('-')[0]))}-${tileKey.split('-')[1]}` : 
         tileKey;
     
     const timestamp = tileTimestamps.get(normalizedKey);
-    if (!timestamp) return true;
+    if (!timestamp) return false;
     
     const now = Date.now();
     const ageHours = (now - timestamp) / (1000 * 60 * 60);
@@ -326,7 +349,17 @@ async function ensureDirectoryExists(filePath) {
 }
 
 function calculateTileDistance(tileX, tileY, centerTileX, centerTileY) {
-    return Math.sqrt(Math.pow(tileX - centerTileX, 2) + Math.pow(tileY - centerTileY, 2));
+    //order
+    let minX=Math.min(tileX,centerTileX);
+    let maxX=Math.max(tileX,centerTileX);
+    let minY=Math.min(tileY,centerTileY);
+    let maxY=Math.max(tileY,centerTileY);
+    if(minX+2048 - maxX < maxX - minX) {
+        const tmp=minX;
+        minX=maxX;
+        maxX=tmp+2048;
+    }
+    return Math.sqrt(Math.pow(maxX - minX, 2) + Math.pow(maxY - minY, 2));
 }
 
 function prioritizeTiles(visibleTiles) {
@@ -339,7 +372,7 @@ function prioritizeTiles(visibleTiles) {
     const tiles = [];
     for (let tileX = visibleTiles.startX; tileX <= visibleTiles.endX; tileX++) {
         for (let tileY = visibleTiles.startY; tileY <= visibleTiles.endY; tileY++) {
-            if (tileX >= 0 && tileX < 2048 && tileY >= 0 && tileY < 2048) {
+            if (tileY >= 0 && tileY < 2048) {
                 const distance = calculateTileDistance(tileX, tileY, centerWplace.tileX, centerWplace.tileY);
                 tiles.push({ tileX, tileY, distance });
             }
@@ -351,7 +384,7 @@ function prioritizeTiles(visibleTiles) {
     return tiles;
 }
 
-async function downloadTile(tileX, tileY) {
+function initDownloadTile(tileX,tileY){
     const normalizedTileX = normalizeWplaceTileX(tileX);
     const normalizedTileY = tileY;
 
@@ -363,34 +396,45 @@ async function downloadTile(tileX, tileY) {
     
     const tileKey = `${normalizedTileX}-${normalizedTileY}`;
     
-    if ((downloadedTiles.has(tileKey) || downloadingTiles.has(tileKey)) && !isTileStale(tileKey)) {
-        return false; // Already downloaded or downloading
+    if (( (!isTileStale(tileKey) || !autoRefreshEnabled) && downloadedTiles.has(tileKey))
+         || downloadingTiles.has(tileKey)) {
+        return false;
     }
-    // return false; // TEMP DISABLE
-
     downloadingTiles.add(tileKey);
     activeDownloads++;
-    
-    // Show downloading status
-    showTileStatus(tileX, tileY, 'downloading');
-    
+    // Show downloading status, unnormalized
+    showTileStatus(tileX, tileY, 'downloading'+(isTileStale(tileKey) ? ' (stale)' : ''));
+    return true;
+}
+
+async function downloadTile(tileX, tileY) {
+    const normalizedTileX = normalizeWplaceTileX(tileX);
+    const normalizedTileY = tileY;
+
+    // const tileKey = `${tileX}-${tileY}`;
+    // Skip if out of Y bounds
+    if (normalizedTileY < 0 || normalizedTileY >= 2048) {
+        return;
+    }
+    const unnormalized_tileKey = `${tileX}-${tileY}`;
+    const tileKey = `${normalizedTileX}-${normalizedTileY}`;
     try {
-        const url = `https://backend.wplace.live/files/s0/tiles/${tileX}/${tileY}.png`;
+        const url = `https://backend.wplace.live/files/s0/tiles/${normalizedTileX}/${normalizedTileY}.png`;
         const response = await fetch(url);
         
         if (response.status === 404) {
             // Tile is empty, mark as downloaded but don't save file
             downloadedTiles.add(tileKey);
-            tileTimestamps.set(tileKey, Date.now()); // Add this line
+            tileTimestamps.set(tileKey, Date.now());
             emptyTiles.add(tileKey);
             downloadingTiles.delete(tileKey);
             activeDownloads--;
             
             // Remove status overlay (no visual indication needed for empty tiles)
-            const statusOverlay = tileStatusOverlays.get(tileKey);
+            const statusOverlay = tileStatusOverlays.get(unnormalized_tileKey);
             if (statusOverlay) {
                 map.removeLayer(statusOverlay);
-                tileStatusOverlays.delete(tileKey);
+                tileStatusOverlays.delete(unnormalized_tileKey);
             }
             
             updateStatus(`Tile ${tileX},${tileY} is empty (404) - marked as complete`);
@@ -414,7 +458,7 @@ async function downloadTile(tileX, tileY) {
         
         // Mark as downloaded
         downloadedTiles.add(tileKey);
-        tileTimestamps.set(tileKey, Date.now()); // Add this line
+        tileTimestamps.set(tileKey, Date.now());
         downloadingTiles.delete(tileKey);
         activeDownloads--;
         
@@ -446,6 +490,7 @@ async function downloadTile(tileX, tileY) {
         return false;
     }
 }
+//expects unnormalized
 function showTileStatus(tileX, tileY, status) {
     const pixelSize = calculatePixelSizeOnScreen();
     if (pixelSize < MIN_PIXEL_SIZE) return; // Don't show status if tiles are too small
@@ -529,25 +574,27 @@ function updateTileStatusDisplay() {
     }
 }
 
-async function processDownloadQueue() {
-    if (downloadQueue.length === 0 || activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
+async function processDownloadQueue(queueID) {
+    if (queueID !== currentDownloadQueueID) {
+        return; // Outdated queue processing
+    }
+    if(downloadsPaused){
         return;
     }
-    
-    const now = Date.now();
-    if (now - lastDownloadTime < DOWNLOAD_RATE_LIMIT) {
-        // Schedule next attempt
-        setTimeout(processDownloadQueue, DOWNLOAD_RATE_LIMIT - (now - lastDownloadTime));
+    if (downloadQueue.length === 0) {
         return;
     }
-    
+    //unnormalized
     const tile = downloadQueue.shift();
     if (tile) {
-        lastDownloadTime = now;
-        await downloadTile(tile.tileX, tile.tileY);
-        
+        //unnormalized
+        if (initDownloadTile(tile.tileX, tile.tileY)) {
+            //send it off
+            downloadTile(tile.tileX, tile.tileY);
+        }
+
         // Continue processing queue
-        setTimeout(processDownloadQueue, DOWNLOAD_RATE_LIMIT);
+        setTimeout(() => processDownloadQueue(queueID), 1000 / Math.min(getTilesPerSecond(), 10));
     }
 }
 
@@ -555,7 +602,8 @@ function queueTileDownloads() {
     if (downloadsPaused) {
         return;
     }
-    
+    const new_id = stepDownloadQueueID();
+
     const pixelSize = calculatePixelSizeOnScreen();
     if (pixelSize < MIN_PIXEL_SIZE) {
         downloadQueue = [];
@@ -570,7 +618,10 @@ function queueTileDownloads() {
     // Get current view center for distance calculation - use ACTUAL coordinates
     const center = map.getCenter();
     const centerWplace = latLngToWplace(center.lat, center.lng);
-    if (!centerWplace) return;
+    if (!centerWplace){
+        console.warn("Center out of bounds, skipping tile queuing");
+        return;
+    }
     
     // Use the actual tile coordinates for distance, not normalized
     const centerTileX = centerWplace.tileX;
@@ -590,40 +641,28 @@ function queueTileDownloads() {
             const normalizedTileKey = `${normalizedTileX}-${normalizedTileY}`;
             
             // Check if we need to download this tile
-            if ((!downloadedTiles.has(normalizedTileKey) || isTileStale(normalizedTileKey)) && 
-                !downloadingTiles.has(normalizedTileKey)) {
-                
-                // Check if already in queue (use normalized coordinates)
-                const alreadyQueued = downloadQueue.some(queuedTile => 
-                    normalizeWplaceTileX(queuedTile.tileX) === normalizedTileX && 
-                    queuedTile.tileY === normalizedTileY
-                );
-                
-                if (!alreadyQueued) {
-                    // Use VISUAL coordinates for distance calculation
-                    const distance = calculateTileDistance(tileX, tileY, centerTileX, centerTileY);
-                    tilesToQueue.push({ 
-                        tileX: normalizedTileX, // Still store normalized for download
-                        tileY: normalizedTileY, 
-                        distance // But distance is based on visual position
-                    });
-                }
+            if ((!downloadedTiles.has(normalizedTileKey)
+                ||(isTileStale(normalizedTileKey) && autoRefreshEnabled)
+                ) && !downloadingTiles.has(normalizedTileKey)) {
+                // Use VISUAL coordinates for distance calculation
+                const distance = calculateTileDistance(tileX, tileY, centerTileX, centerTileY);
+                tilesToQueue.push({ 
+                    tileX: tileX,
+                    tileY: tileY,
+                    distance // But distance is based on visual position
+                });
             }
         }
     }
     
-    // Add to queue and sort by distance
-    downloadQueue.push(...tilesToQueue);
+    downloadQueue = tilesToQueue;
+    // Sort by distance from center
     downloadQueue.sort((a, b) => a.distance - b.distance);
     
-    processDownloadQueue();
+    processDownloadQueue(new_id);
 }
 
-function createWplaceTileLayer() {
-    wplaceTileLayer = L.layerGroup();
-    window.wplaceTileLayer = wplaceTileLayer;
-    wplaceTileLayer.addTo(map);
-}
+
 function loadWplaceTile(tileX, tileY) {
     const tileKey = `${tileX}-${tileY}`;
     
@@ -670,21 +709,14 @@ function loadWplaceTile(tileX, tileY) {
         crossOrigin: 'anonymous'
     });
     
-    // // Handle load events
-    // imageOverlay.on('load', function() {
-    //     console.log(`Loaded tile ${normalizedTileX},${normalizedTileY} from file`);
-    // });
-    
-    // imageOverlay.on('error', function() {
-    //     console.log(`Failed to load tile ${normalizedTileX},${normalizedTileY} from file`);
-    //     loadedTiles.delete(normalizedTileKey);
-    // });
+    imageOverlay.on('error', function() {
+        console.error(`Failed to load tile ${normalizedTileX},${normalizedTileY} from file`);
+        loadedTiles.delete(normalizedTileKey);
+    });
     
     // Store and add to layer
     loadedTiles.set(tileKey, imageOverlay);
     wplaceTileLayer.addLayer(imageOverlay);
-    
-    return imageOverlay;
 }
 
 // Load image from file system (for Electron)
@@ -730,54 +762,43 @@ function getWplaceViewInfo() {
     const bounds = map.getBounds();
     const topLeft = latLngToWplace(bounds.getNorth(), bounds.getWest());
     const bottomRight = latLngToWplace(bounds.getSouth(), bounds.getEast());
-    // Handle cases where we're partially out of bounds
-    if (!topLeft && !bottomRight) {
+
+    if (!topLeft || !bottomRight) {
+        if(!topLeft){
+            console.warn("Top-left corner out of bounds");
+        }
+        if(!bottomRight){
+            console.warn("Bottom-right corner out of bounds");
+        }
+
         return { visibleTiles: null };
     }
-    
-    // If one corner is out of bounds, clamp to valid range
-    let startY, endY;
-    if (topLeft && bottomRight) {
-        startY = Math.max(0, Math.floor(topLeft.tileY));
-        endY = Math.min(2047, Math.ceil(bottomRight.tileY));
-    } else if (topLeft) {
-        startY = Math.max(0, Math.floor(topLeft.tileY));
-        endY = 2047;
-    } else if (bottomRight) {
-        startY = 0;
-        endY = Math.min(2047, Math.ceil(bottomRight.tileY));
-    }
-    
-    // X coordinates can wrap around, so use the raw values
-    const startX = topLeft ? Math.floor(topLeft.tileX) : Math.floor(bottomRight.tileX);
-    const endX = bottomRight ? Math.ceil(bottomRight.tileX) : Math.ceil(topLeft.tileX);
-    
     return {
         topLeft: topLeft,
         bottomRight: bottomRight,
         visibleTiles: {
-            startX: startX,
-            endX: endX,
-            startY: startY,
-            endY: endY
+            startX: topLeft.tileX,
+            endX: bottomRight.tileX,
+            startY: topLeft.tileY,
+            endY: bottomRight.tileY
         }
     };
 }
 
 // Initialize map when page loads
 document.addEventListener('DOMContentLoaded', function() {
+    if(!isElectron()) {
+        console.error("This application is intended to run in Electron.");
+        alert("This application is intended to run in Electron.");
+        return;
+    }
     initializeMap();
     setupControls();
     setupEventListeners();
 });
 
 
-function createPixelLayer() {
-    pixelLayer = L.layerGroup();
-    
-    // Add some test pixels to see if our coordinate conversion works
-    addTestPixels();
-}
+
 
 
 
@@ -886,45 +907,6 @@ function wplaceToContainer(tileX, tileY, pixelX, pixelY) {
     return { containerX, containerY };
 }
 
-function addTestPixels() {
-    // Test pixels to verify the coordinate system
-    const centerTileX = 1024;
-    const centerTileY = 1024;
-    
-    const testPixels = [
-        // Corner pixels of the center tile
-        { x: centerTileX, y: centerTileY, z: 0, w: 0, color: '#ff0000' },      // top-left
-        { x: centerTileX, y: centerTileY, z: 999, w: 0, color: '#00ff00' },    // top-right
-        { x: centerTileX, y: centerTileY, z: 0, w: 999, color: '#0000ff' },    // bottom-left
-        { x: centerTileX, y: centerTileY, z: 999, w: 999, color: '#ffff00' },  // bottom-right
-        // Center pixel
-        { x: centerTileX, y: centerTileY, z: 500, w: 500, color: '#ff00ff' },
-    ];
-    
-    testPixels.forEach(pixel => {
-        // Get the top-left corner of this pixel
-        const [lat, lng] = wplaceToLatLng(pixel.x, pixel.y, pixel.z, pixel.w);
-        
-        // Very small marker just to see where pixels are
-        const circle = L.circleMarker([lat, lng], {
-            color: pixel.color,
-            fillColor: pixel.color,
-            fillOpacity: 1.0,
-            radius: 3,
-            weight: 1
-        });
-        
-        pixelLayer.addLayer(circle);
-    });
-    
-    pixelLayer.addTo(map);
-    
-    const centerCoords = wplaceToLatLng(centerTileX, centerTileY, 500, 500);
-    map.setView(centerCoords, 12);
-    
-    updateStatus(`Added ${testPixels.length} test pixels`);
-}
-
 function updateGrid() {
     if (gridLayer && map.hasLayer(gridLayer)) {
         addGridToCurrentView();
@@ -998,7 +980,6 @@ function initializeMap() {
 
     // Create a grid overlay for tile boundaries (useful for debugging)
     createGridLayer();
-    createPixelLayer();
     // setupMapLimits();
     createWplaceTileLayer();
     createFavoriteLayer();
@@ -1016,14 +997,34 @@ function calculatePixelSizeOnScreen() {
 }
 
 
-function createGridLayer() {
-    gridLayer = L.layerGroup();
-    
-    // This will show tile boundaries - useful for understanding tile structure
-    // We'll add this when user clicks "Toggle Grid"
-}
+
 
 function setupControls() {
+
+    const tilesPerSecondSlider = document.getElementById('tilesPerSecondSlider');
+    const tilesPerSecondInput = document.getElementById('tilesPerSecondInput');
+    tilesPerSecondSlider.addEventListener('input', () => {
+        tilesPerSecondInput.value = tilesPerSecondSlider.value;
+        if(downloadQueue.length > 0){
+            queueTileDownloads();
+        }
+    });
+    tilesPerSecondInput.addEventListener('input', () => {
+        let val = parseFloat(tilesPerSecondInput.value);
+        if (isNaN(val) || val < 0.1) val = 0.1;
+        if (val > 10) val = 10;
+        tilesPerSecondInput.value = val;
+        tilesPerSecondSlider.value = val;
+        if(downloadQueue.length > 0){
+            queueTileDownloads();
+        }
+    });
+    
+    // Expose getter for app.js
+    getTilesPerSecond = function() {
+        return parseFloat(tilesPerSecondInput.value);
+    };
+
     const baseLayerSelect = document.getElementById('baseLayer');
     const resetViewBtn = document.getElementById('resetView');
     const toggleGridBtn = document.getElementById('toggleGrid');
@@ -1066,53 +1067,31 @@ function setupControls() {
             map.on('moveend zoomend', updateGrid);
         }
     });
-    const togglePixelsBtn = document.getElementById('togglePixels');
-    const centerOnPixelsBtn = document.getElementById('centerOnPixels');
     const toggleImageBtn = document.getElementById('toggleImage');
-    // Toggle pixels
-    let pixelsVisible = true;
-    togglePixelsBtn.addEventListener('click', function() {
-        if (pixelsVisible) {
-            map.removeLayer(pixelLayer);
-            pixelsVisible = false;
-            this.textContent = 'Show Pixels';
-        } else {
-            map.addLayer(pixelLayer);
-            pixelsVisible = true;
-            this.textContent = 'Hide Pixels';
-        }
-    });
+
     // Toggle image layer
     let imageVisible = true;
     toggleImageBtn.addEventListener('click', function() {
         if (imageVisible) {
             map.removeLayer(wplaceTileLayer);
             imageVisible = false;
-            this.textContent = 'Show Image';
+            this.textContent = 'Show Tiles';
         } else {
             map.addLayer(wplaceTileLayer);
             imageVisible = true;
-            this.textContent = 'Hide Image';
+            this.textContent = 'Hide Tiles';
         }
     });
-    loadWplaceTile(1024, 1024); // Load center tile as initial test
     
-    // Center on test pixels
-    centerOnPixelsBtn.addEventListener('click', function() {
-        const centerCoords = wplaceToLatLng(1024, 1024, 500, 500);
-        map.setView(centerCoords, 15);
-        updateStatus('Centered on test pixels');
-    });
+
     // Auto-refresh toggle
     const toggleAutoRefreshBtn = document.getElementById('toggleAutoRefresh');
     toggleAutoRefreshBtn.addEventListener('click', function() {
         autoRefreshEnabled = !autoRefreshEnabled;
         this.textContent = `Auto-Refresh: ${autoRefreshEnabled ? 'ON' : 'OFF'}`;
         updateStatus(`Auto-refresh ${autoRefreshEnabled ? 'enabled' : 'disabled'}`);
-        
-        if (autoRefreshEnabled) {
-            queueTileDownloads(); // Re-queue stale tiles
-        }
+
+        queueTileDownloads(); // Re-queue stale tiles or delete old queue
     });
 
     // Pause/Resume downloads
@@ -1161,6 +1140,15 @@ function setupControls() {
         }
     });
 
+    const toggleMenuBtn = document.getElementById('toggleMenuBtn');
+    const controlsMenu = document.querySelector('.controls');
+    let menuVisible = true;
+
+    toggleMenuBtn.addEventListener('click', () => {
+        menuVisible = !menuVisible;
+        controlsMenu.style.display = menuVisible ? 'block' : 'none';
+        toggleMenuBtn.textContent = menuVisible ? 'Hide Menu' : 'Show Menu';
+    });
 }
 
 function addGridToCurrentView() {
