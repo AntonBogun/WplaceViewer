@@ -7,6 +7,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "build": "electron-builder",
+    "build-win": "electron-builder --win",
     "pack": "electron-builder --dir"
   },
   "devDependencies": {
@@ -24,8 +25,14 @@
     },
     "files": [
       "**/*",
-      "!node_modules",
-      "!dist"
-    ]
+      "!node_modules/**/*",
+      "!dist/**/*",
+      "!.git/**/*",
+      "!*.md"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "icon.ico"
+    }
   }
 }

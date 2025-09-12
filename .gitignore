@@ -3,3 +3,4 @@ tiles/*
 downloaded_tiles.json
 favorites.json
 last_location.json
+dist/*

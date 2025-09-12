@@ -1,5 +1,11 @@
 # WPlaceViewer Setup Instructions
 
+## Option 1: Release Binary Download
+1. Go to the [Releases page](https://github.com/AntonBogun/WPlaceViewer/releases) and download the latest release for your platform.
+2. Put the portable executable in a dedicated folder.
+3. Run the portable executable.
+
+## Option 2: Run from Source
 ## Prerequisites
 
 - **Windows** (recommended)
