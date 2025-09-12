@@ -21,8 +21,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     cwd: () => process.cwd(),
     platform: process.platform,
     
-    // Buffer operations - ADD THIS
+    // Buffer operations
     bufferFrom: (data) => Buffer.from(data),
+    
+    // Shell operations
+    openPath: (filePath) => require('electron').shell.showItemInFolder(filePath),
     
     // Check if running in Electron
     isElectron: true

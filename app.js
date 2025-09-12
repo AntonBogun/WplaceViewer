@@ -54,6 +54,9 @@ let favoriteLayer; // Layer group for favorite markers
 let favoritesVisible = true; // Whether favorites are currently shown
 
 
+let cropPreviewLayer;
+let cropPreviewVisible = false;
+
 //make tiles available
 window.loadedTiles = loadedTiles;
 window.downloadedTiles = downloadedTiles;
@@ -200,6 +203,10 @@ function createGridLayer() {
     gridLayer = L.layerGroup();
     window.gridLayer = gridLayer;
     gridLayer.addTo(map);//!is this even needed?
+}
+function createCropPreviewLayer() {
+    cropPreviewLayer = L.layerGroup();
+    window.cropPreviewLayer = cropPreviewLayer;
 }
 
 function addFavorite(wplaceCoords, name = null) {
@@ -912,22 +919,6 @@ function updateGrid() {
         addGridToCurrentView();
     }
 }
-// Set up map bounds and zoom limits
-function setupMapLimits() {
-    // wplace world bounds
-    const worldBounds = L.latLngBounds(
-        [WORLD_MAX.y, WORLD_MIN.x], // southwest
-        [WORLD_MIN.y, WORLD_MAX.x]  // northeast
-    );
-    
-    // Restrict panning to wplace area
-    map.setMaxBounds(worldBounds);
-    map.options.maxBoundsViscosity = 1.0; // Hard boundary
-    
-    // Set zoom limits
-    map.setMinZoom(3);  // Can't zoom out too far
-    map.setMaxZoom(26); // Can zoom in very close
-}
 function initializeMap() {
     // Create map centered on world view
     map = L.map('map', {
@@ -943,6 +934,8 @@ function initializeMap() {
         [85.05112878, 540]
     );
     map.setMaxBounds(verticalBounds);
+    map.setMinZoom(3);  // Can't zoom out too far
+    map.setMaxZoom(25); // Can zoom in very close
     //add to window
     window.map = map;
     // Add zoom control in bottom right
@@ -983,6 +976,7 @@ function initializeMap() {
     // setupMapLimits();
     createWplaceTileLayer();
     createFavoriteLayer();
+    createCropPreviewLayer();
 
     updateStatus('Map initialized');
 }
@@ -1142,14 +1136,115 @@ function setupControls() {
 
     const toggleMenuBtn = document.getElementById('toggleMenuBtn');
     const controlsMenu = document.querySelector('.controls');
+    const infoPanel = document.querySelector('.info-panel');
     let menuVisible = true;
+
+    // Export selected tile
+    const showSelectedTileBtn = document.getElementById('showSelectedTile');
+    showSelectedTileBtn.addEventListener('click', async function() {
+        if (!selectedPixel) {
+            updateStatus('No pixel selected. Click on the map to select a tile first.');
+            return;
+        }
+        if(!downloadedTiles.has(`${normalizeWplaceTileX(selectedPixel.tileX)}-${selectedPixel.tileY}`)){
+            updateStatus('Selected tile is not downloaded yet. Please download it first.');
+            return;
+        }
+        openTileLocation(selectedPixel.tileX, selectedPixel.tileY);
+    });
+
+    // Export crop area
+    const exportCropBtn = document.getElementById('exportCropArea');
+    exportCropBtn.addEventListener('click', async function() {
+        const startTileX = parseInt(document.getElementById('cropStartTileX').value);
+        const startTileY = parseInt(document.getElementById('cropStartTileY').value);
+        const startPixelX = parseInt(document.getElementById('cropStartPixelX').value);
+        const startPixelY = parseInt(document.getElementById('cropStartPixelY').value);
+        const endTileX = parseInt(document.getElementById('cropEndTileX').value);
+        const endTileY = parseInt(document.getElementById('cropEndTileY').value);
+        const endPixelX = parseInt(document.getElementById('cropEndPixelX').value);
+        const endPixelY = parseInt(document.getElementById('cropEndPixelY').value);
+        
+        // Validate inputs
+        if (isNaN(startTileX) || isNaN(startTileY) || isNaN(startPixelX) || isNaN(startPixelY) ||
+            isNaN(endTileX) || isNaN(endTileY) || isNaN(endPixelX) || isNaN(endPixelY)) {
+            updateStatus('Please fill in all crop coordinates');
+            return;
+        }
+        
+        this.disabled = true;
+        this.textContent = 'Exporting...';
+        
+        try {
+            const dimensions = validateCropArea(startTileX, startTileY, startPixelX, startPixelY, 
+                                            endTileX, endTileY, endPixelX, endPixelY);
+            
+            updateStatus(`Exporting crop area (${dimensions.width}x${dimensions.height} pixels)...`);
+            await exportCanvasCrop(startTileX, startTileY, startPixelX, startPixelY,
+                                        endTileX, endTileY, endPixelX, endPixelY);
+            updateStatus(`Successfully exported crop area`);
+        } catch (error) {
+            updateStatus(`Export failed: ${error.message}`);
+            console.error('Crop export error:', error);
+        } finally {
+            this.disabled = false;
+            this.textContent = 'Export Crop Area';
+        }
+    });
+
+    // Toggle crop preview
+    const toggleCropPreviewBtn = document.getElementById('toggleCropPreview');
+    toggleCropPreviewBtn.addEventListener('click', function() {
+        cropPreviewVisible = !cropPreviewVisible;
+        
+        if (cropPreviewVisible) {
+            map.addLayer(cropPreviewLayer);
+            this.textContent = 'Hide Crop Preview';
+            updateCropPreview();
+        } else {
+            map.removeLayer(cropPreviewLayer);
+            this.textContent = 'Show Crop Preview';
+        }
+    });
+
+    // Add input listeners for real-time preview updates
+    ['cropStartTileX', 'cropStartTileY', 'cropStartPixelX', 'cropStartPixelY',
+    'cropEndTileX', 'cropEndTileY', 'cropEndPixelX', 'cropEndPixelY'].forEach(id => {
+        document.getElementById(id).addEventListener('input', updateCropPreview);
+    });
+    [[document.getElementById('setCropFromSelectionTL'),"Start"],
+    [document.getElementById('setCropFromSelectionBR'),"End"]]
+    .forEach(([btn, pos]) => {
+        btn.addEventListener('click', function() {
+            if (!selectedPixel) {
+                updateStatus('No pixel selected. Click on the map to select a tile first.');
+                return;
+            }
+            if (pos === "Start") {
+                document.getElementById('cropStartTileX').value = selectedPixel.tileX;
+                document.getElementById('cropStartTileY').value = selectedPixel.tileY;
+                document.getElementById('cropStartPixelX').value = selectedPixel.pixelX;
+                document.getElementById('cropStartPixelY').value = selectedPixel.pixelY;
+            } else {
+                document.getElementById('cropEndTileX').value = selectedPixel.tileX;
+                document.getElementById('cropEndTileY').value = selectedPixel.tileY;
+                document.getElementById('cropEndPixelX').value = selectedPixel.pixelX;
+                document.getElementById('cropEndPixelY').value = selectedPixel.pixelY;
+            }
+            updateCropPreview();
+        });
+    });
+
 
     toggleMenuBtn.addEventListener('click', () => {
         menuVisible = !menuVisible;
         controlsMenu.style.display = menuVisible ? 'block' : 'none';
+        infoPanel.style.display = menuVisible ? 'block' : 'none';
         toggleMenuBtn.textContent = menuVisible ? 'Hide Menu' : 'Show Menu';
     });
 }
+
+
 
 function addGridToCurrentView() {
     // Clear existing grid
@@ -1218,6 +1313,428 @@ function addGridToCurrentView() {
         gridLayer.addLayer(line);
     }
 }
+
+async function openTileLocation(tileX, tileY) {
+    if (!isElectron()) {
+        updateStatus('File operations only available in Electron');
+        return;
+    }
+    
+    const normalizedTileX = normalizeWplaceTileX(tileX);
+    const normalizedTileY = tileY;
+    const normalizedTileKey = `${normalizedTileX}-${normalizedTileY}`;
+    
+    try {
+        if (downloadedTiles.has(normalizedTileKey) && !emptyTiles.has(normalizedTileKey)) {
+            // Tile exists, open it
+            const filePath = getTileFilePath(normalizedTileX, normalizedTileY);
+            await window.electronAPI.openPath(filePath);
+            updateStatus(`Opened tile ${tileX},${tileY} in file explorer`);
+        } else if (emptyTiles.has(normalizedTileKey)) {
+            updateStatus(`Tile ${tileX},${tileY} is empty (no file to open)`);
+        } else {
+            updateStatus(`Tile ${tileX},${tileY} not downloaded yet`);
+        }
+    } catch (error) {
+        console.error('Failed to open tile location:', error);
+        updateStatus(`Failed to open tile location: ${error.message}`);
+    }
+}
+
+
+function updateCropPreview() {
+    if (!cropPreviewLayer) return;
+    
+    // Clear existing preview
+    cropPreviewLayer.clearLayers();
+    
+    if (!cropPreviewVisible) return;
+    
+    // Get crop coordinates
+    const startTileX = parseInt(document.getElementById('cropStartTileX').value);
+    const startTileY = parseInt(document.getElementById('cropStartTileY').value);
+    const startPixelX = parseInt(document.getElementById('cropStartPixelX').value);
+    const startPixelY = parseInt(document.getElementById('cropStartPixelY').value);
+    const endTileX = parseInt(document.getElementById('cropEndTileX').value);
+    const endTileY = parseInt(document.getElementById('cropEndTileY').value);
+    const endPixelX = parseInt(document.getElementById('cropEndPixelX').value);
+    const endPixelY = parseInt(document.getElementById('cropEndPixelY').value);
+    // Validate inputs
+    if (isNaN(startTileX) || isNaN(startTileY) || isNaN(startPixelX) || isNaN(startPixelY) ||
+    isNaN(endTileX) || isNaN(endTileY) || isNaN(endPixelX) || isNaN(endPixelY)) {
+        return;
+    }
+    //ensure Y is sane
+    if (startTileY < 0 || startTileY >= 2048 || endTileY < 0 || endTileY >= 2048) {
+        return;
+    }
+    
+    // Convert to lat/lng coordinates
+    const [startLat, startLng] = wplaceToLatLng(startTileX, startTileY, startPixelX, startPixelY);
+    const [endLat, endLng] = wplaceToLatLng(endTileX, endTileY, endPixelX, endPixelY);
+    
+    // Create preview rectangle
+    const previewRect = L.rectangle([
+        [Math.min(startLat, endLat), Math.min(startLng, endLng)],
+        [Math.max(startLat, endLat), Math.max(startLng, endLng)]
+    ], {
+        color: '#ff6b6b',
+        fillColor: '#ff6b6b',
+        fillOpacity: 0.2,
+        weight: 2,
+        opacity: 0.8,
+        dashArray: '10, 5'
+    });
+    
+    cropPreviewLayer.addLayer(previewRect);
+}
+
+function validateCropArea(startTileX, startTileY, startPixelX, startPixelY, endTileX, endTileY, endPixelX, endPixelY) {
+    // Calculate total pixel dimensions
+    const startGlobalX = startTileX * 1000 + startPixelX;
+    const startGlobalY = startTileY * 1000 + startPixelY;
+    const endGlobalX = endTileX * 1000 + endPixelX;
+    const endGlobalY = endTileY * 1000 + endPixelY;
+    
+    const width = Math.abs(endGlobalX - startGlobalX) + 1;
+    const height = Math.abs(endGlobalY - startGlobalY) + 1;
+    
+    if (width > 6000 || height > 6000) {
+        throw new Error(`Crop area too large: ${width}x${height} pixels. Maximum allowed: 6000x6000`);
+    }
+    
+    return { width, height };
+}
+
+// Configuration
+const TILE_SIZE = 1000;
+const MAX_TILES = 5; 
+const WPLACE_SIZE = 2048;
+
+// Utility functions
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Load a single tile from local storage
+async function loadLocalTile(x, y) {
+    x=normalizeWplaceTileX(x);
+
+    
+    const normalizedTileKey = `${x}-${y}`;
+    
+    try {
+        // Check if tile is downloaded
+        if (!downloadedTiles.has(normalizedTileKey)) {
+            throw new Error(`Tile (${x}, ${y}) not downloaded`);
+        }
+        
+        // Check if tile is empty
+        if (emptyTiles && emptyTiles.has(normalizedTileKey)) {
+            console.log(`Tile (${x}, ${y}) is empty, creating transparent canvas`);
+            const canvas = document.createElement('canvas');
+            canvas.width = TILE_SIZE;
+            canvas.height = TILE_SIZE;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, TILE_SIZE, TILE_SIZE);
+            return canvas;
+        }
+        
+        // Load from file system
+        const tilePath = getTileFilePath(x, y);
+        const fileUrl = `file://${tilePath}`;
+        
+        const img = new Image();
+        
+        return new Promise((resolve, reject) => {
+            img.onload = () => {
+                console.log(`Loaded local tile (${x}, ${y}) size: ${img.width}x${img.height}`);
+                
+                const canvas = document.createElement('canvas');
+                canvas.width = TILE_SIZE;
+                canvas.height = TILE_SIZE;
+                const ctx = canvas.getContext('2d');
+                
+                // Scale the image to fill the full tile size
+                ctx.imageSmoothingEnabled = false; // Preserve pixel art
+                ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, TILE_SIZE, TILE_SIZE);
+                
+                resolve(canvas);
+            };
+            
+            img.onerror = (error) => {
+                console.error(`Failed to load tile (${x}, ${y}) from file:`, error);
+                reject(new Error(`Failed to load tile (${x}, ${y}) from local file`));
+            };
+            
+            img.src = fileUrl;
+        });
+        
+    } catch (error) {
+        console.error(`Error loading local tile (${x}, ${y}):`, error);
+        throw error; // Re-throw to fail the export
+    }
+}
+
+
+/**Core function to download and composite tiles
+ * 
+ * Note: does not auto-wrap the rect, only individual tiles
+*/
+async function downloadTileArea(minTileX, minTileY, maxTileX, maxTileY) {
+
+    const tilesWide = maxTileX - minTileX + 1;
+    const tilesHigh = maxTileY - minTileY + 1;
+    const totalTiles = tilesWide * tilesHigh;
+    
+    // Check tile limit
+    // if (tilesWide > MAX_TILES || tilesHigh > MAX_TILES) {
+    if (tilesWide * tilesHigh > MAX_TILES*MAX_TILES) {
+        throw new Error(`Requested area spans ${tilesWide}x${tilesHigh} (${tilesWide * tilesHigh}) tiles, but maximum allowed is ${MAX_TILES*MAX_TILES}`);
+    }
+    console.log("Checking if all required tiles are downloaded...");
+    validateTilesDownloaded(minTileX, minTileY, maxTileX, maxTileY);
+    
+    console.log(`Downloading tile area: (${minTileX}, ${minTileY}) to (${maxTileX}, ${maxTileY})`);
+    console.log(`Tiles needed: ${tilesWide}x${tilesHigh} = ${totalTiles} tiles`);
+    
+    const tiles = new Map();
+    
+    // Download all required tiles
+    const downloadPromises = [];
+    for (let tileX = minTileX; tileX <= maxTileX; tileX++) {
+        for (let tileY = minTileY; tileY <= maxTileY; tileY++) {
+            downloadPromises.push(
+                loadLocalTile(tileX, tileY).then(canvas => {
+                    tiles.set(`${tileX},${tileY}`, canvas);
+                    console.log(`Downloaded tile (${tileX}, ${tileY}) - ${tiles.size}/${totalTiles} complete`);
+                })
+            );
+        }
+    }
+    
+    await Promise.all(downloadPromises);
+    console.log('All tiles downloaded, creating composite...');
+    
+    // Create composite canvas with all tiles
+    const compositeCanvas = document.createElement('canvas');
+    compositeCanvas.width = tilesWide * TILE_SIZE;
+    compositeCanvas.height = tilesHigh * TILE_SIZE;
+    const compositeCtx = compositeCanvas.getContext('2d');
+    
+    // Draw all tiles onto composite canvas
+    for (let tileX = minTileX; tileX <= maxTileX; tileX++) {
+        for (let tileY = minTileY; tileY <= maxTileY; tileY++) {
+            const tileCanvas = tiles.get(`${tileX},${tileY}`);
+            if (tileCanvas) {
+                const px = (tileX - minTileX) * TILE_SIZE;
+                const py = (tileY - minTileY) * TILE_SIZE;
+                compositeCtx.drawImage(tileCanvas, px, py);
+            }
+        }
+    }
+    
+    return {
+        canvas: compositeCanvas,
+        minTileX,
+        minTileY,
+        tilesWide,
+        tilesHigh
+    };
+}
+// Check if all required tiles are downloaded
+function validateTilesDownloaded(minTileX, minTileY, maxTileX, maxTileY) {
+    const missingTiles = [];
+    
+    for (let tileX = minTileX; tileX <= maxTileX; tileX++) {
+        for (let tileY = minTileY; tileY <= maxTileY; tileY++) {
+            const normalizedX = normalizeWplaceTileX(tileX);
+            const normalizedY = tileY;
+            const normalizedTileKey = `${normalizedX}-${normalizedY}`;
+            
+            if (!downloadedTiles.has(normalizedTileKey)) {
+                missingTiles.push(`(${normalizedX}, ${normalizedY})`);
+            }
+        }
+    }
+    
+    if (missingTiles.length > 0) {
+        throw new Error(`Missing downloaded tiles: ${missingTiles.join(', ')}. Please download these tiles first.`);
+    }
+    
+    return true;
+}
+
+// Function to download a file
+function downloadCanvas(canvas, filename) {
+    canvas.toBlob((blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        console.log(`Download complete! File saved as: ${filename}`);
+    }, 'image/png');
+}
+function wrap_tiles(startTileX, startTileY, endTileX, endTileY) {
+    if(!(in_range(startTileX, 0, WPLACE_SIZE - 1) && in_range(startTileY, 0, WPLACE_SIZE - 1) &&
+        in_range(endTileX, 0, WPLACE_SIZE - 1) && in_range(endTileY, 0, WPLACE_SIZE - 1))) {
+        throw new Error(`Tile coordinates must be between 0 and ${WPLACE_SIZE - 1}`);
+    }
+    let minTileX = Math.min(startTileX, endTileX);
+    let maxTileX = Math.max(startTileX, endTileX);
+    let minTileY = Math.min(startTileY, endTileY);
+    let maxTileY = Math.max(startTileY, endTileY);
+    //do wrapping
+    if (maxTileX - minTileX + 1 > minTileX - maxTileX + WPLACE_SIZE + 1){
+        const temp = minTileX;
+        minTileX = maxTileX;
+        maxTileX = temp+ WPLACE_SIZE;
+    }
+    if (maxTileY - minTileY + 1 > minTileY - maxTileY + WPLACE_SIZE + 1){
+        const temp = minTileY;
+        minTileY = maxTileY;
+        maxTileY = temp+ WPLACE_SIZE;
+    }
+    return { minTileX, minTileY, maxTileX, maxTileY };
+}
+// Tile-based export function (efficient - no unnecessary cropping)
+async function exportCanvas(startTileX, startTileY, endTileX, endTileY) {
+    //validate tiles
+    if(!(in_range(startTileX, 0, WPLACE_SIZE - 1) && in_range(startTileY, 0, WPLACE_SIZE - 1) &&
+        in_range(endTileX, 0, WPLACE_SIZE - 1) && in_range(endTileY, 0, WPLACE_SIZE - 1))) {
+        throw new Error(`Tile coordinates must be between 0 and ${WPLACE_SIZE - 1}`);
+    }
+    let minTileX = Math.min(startTileX, endTileX);
+    let maxTileX = Math.max(startTileX, endTileX);
+    let minTileY = Math.min(startTileY, endTileY);
+    let maxTileY = Math.max(startTileY, endTileY);
+    //do wrapping
+    if (maxTileX - minTileX + 1 > minTileX - maxTileX + WPLACE_SIZE + 1){
+        const temp = minTileX;
+        minTileX = maxTileX;
+        maxTileX = temp+ WPLACE_SIZE;
+    }
+    if (maxTileY - minTileY + 1 > minTileY - maxTileY + WPLACE_SIZE + 1){
+        const temp = minTileY;
+        minTileY = maxTileY;
+        maxTileY = temp+ WPLACE_SIZE;
+    }
+    try {
+        const result = await downloadTileArea(minTileX, minTileY, maxTileX, maxTileY);
+        const filename = `wplace_tiles_${minTileX}_${minTileY}_to_${maxTileX}_${maxTileY}_${Date.now()}.png`;
+        
+        console.log(`Final image size: ${result.canvas.width}x${result.canvas.height} pixels`);
+        downloadCanvas(result.canvas, filename);
+        
+        return result.canvas;
+    } catch (error) {
+        console.error('Export failed:', error.message);
+        return null;
+    }
+}
+function in_range(value, min, max) {
+    return value >= min && value <= max;
+}
+// Pixel-based export with cropping
+async function exportCanvasCrop(startTileX, startTileY, startPixelX, startPixelY, endTileX, endTileY, endPixelX, endPixelY) {
+    //validate tiles
+    if(!(in_range(startTileX, 0, WPLACE_SIZE - 1) && in_range(startTileY, 0, WPLACE_SIZE - 1) &&
+        in_range(endTileX, 0, WPLACE_SIZE - 1) && in_range(endTileY, 0, WPLACE_SIZE - 1))) {
+        throw new Error(`Tile coordinates must be between 0 and ${WPLACE_SIZE - 1}`);
+    }
+    // Validate pixels
+    if (!(in_range(startPixelX, 0, TILE_SIZE - 1) && in_range(startPixelY, 0, TILE_SIZE - 1) &&
+        in_range(endPixelX, 0, TILE_SIZE - 1) && in_range(endPixelY, 0, TILE_SIZE - 1))) {
+        throw new Error(`Pixel coordinates must be between 0 and ${TILE_SIZE - 1}`);
+    }
+    //compute min and max
+    let minTileX, maxTileX, minTileY, maxTileY;
+    if( startTileX > endTileX || (startTileX === endTileX && startPixelX > endPixelX)){
+        minTileX = endTileX;
+        maxTileX = startTileX;
+        const tempX = startPixelX;
+        startPixelX = endPixelX;
+        endPixelX = tempX;
+    } else {
+        minTileX = startTileX;
+        maxTileX = endTileX;
+    }
+    if( startTileY > endTileY || (startTileY === endTileY && startPixelY > endPixelY)){
+        minTileY = endTileY;
+        maxTileY = startTileY;
+        const tempY = startPixelY;
+        startPixelY = endPixelY;
+        endPixelY = tempY;
+    } else {
+        minTileY = startTileY;
+        maxTileY = endTileY;
+    }
+    //do wrapping
+    if (maxTileX - minTileX + 1 > minTileX - maxTileX + WPLACE_SIZE + 1){
+        let temp = minTileX;
+        minTileX = maxTileX;
+        maxTileX = temp+ WPLACE_SIZE;
+        temp = startPixelX;//have to also swap pixel coordinates
+        startPixelX = endPixelX;
+        endPixelX = temp;
+    }
+    if (maxTileY - minTileY + 1 > minTileY - maxTileY + WPLACE_SIZE + 1){
+        let temp = minTileY;
+        minTileY = maxTileY;
+        maxTileY = temp+ WPLACE_SIZE;
+        temp = startPixelY;
+        startPixelY = endPixelY;
+        endPixelY = temp;
+    }
+    const minPixelX = minTileX * TILE_SIZE + startPixelX;
+    const minPixelY = minTileY * TILE_SIZE + startPixelY;
+    const maxPixelX = maxTileX * TILE_SIZE + endPixelX;
+    const maxPixelY = maxTileY * TILE_SIZE + endPixelY;
+    
+    console.log(`Exporting cropped area:`);
+    console.log(`  Pixel coordinates: (${minPixelX}, ${minPixelY}) to (${maxPixelX}, ${maxPixelY})`);
+    console.log(`  Final cropped size: ${maxPixelX - minPixelX + 1}x${maxPixelY - minPixelY + 1} pixels`);
+    
+    try {
+        // Download the tile area containing our crop region
+        const result = await downloadTileArea(minTileX, minTileY, maxTileX, maxTileY);
+        
+        // Calculate crop area relative to composite canvas
+        const cropStartX = startPixelX;
+        const cropStartY = startPixelY;
+        const cropWidth = maxPixelX - minPixelX + 1;
+        const cropHeight = maxPixelY - minPixelY + 1;
+        
+        // Create final cropped canvas
+        const finalCanvas = document.createElement('canvas');
+        finalCanvas.width = cropWidth;
+        finalCanvas.height = cropHeight;
+        const finalCtx = finalCanvas.getContext('2d');
+        
+        // Draw the cropped area
+        finalCtx.drawImage(
+            result.canvas,
+            cropStartX, cropStartY, cropWidth, cropHeight,
+            0, 0, cropWidth, cropHeight
+        );
+        
+        const filename = `wplace_crop_${minPixelX}_${minPixelY}_to_${maxPixelX}_${maxPixelY}_${Date.now()}.png`;
+        console.log(`Cropped image dimensions: ${cropWidth}x${cropHeight} pixels`);
+        downloadCanvas(finalCanvas, filename);
+        
+        return finalCanvas;
+    } catch (error) {
+        console.error('Crop export failed:', error.message);
+        return null;
+    }
+}
+
+
+
+
 
 function setupEventListeners() {
     // Update info panel on map events
