@@ -84,24 +84,43 @@ async function loadDownloadedTilesList() {
                 downloadedTiles = new Set(parsed);
                 emptyTiles = new Set();
                 tileTimestamps = new Map(); // No timestamps for old data
-                favoritePixels = new Map(); // No favorites for old data
                 window.downloadedTiles = downloadedTiles;
                 window.emptyTiles = emptyTiles;
                 window.tileTimestamps = tileTimestamps;
-                window.favoritePixels = favoritePixels;
             } else {
                 downloadedTiles = new Set(parsed.downloaded || []);
                 emptyTiles = new Set(parsed.empty || []);
-                // Load timestamps
                 tileTimestamps = new Map(Object.entries(parsed.timestamps || {}));
-                favoritePixels = new Map(Object.entries(parsed.favorites || {}));
                 window.downloadedTiles = downloadedTiles;
                 window.emptyTiles = emptyTiles;
                 window.tileTimestamps = tileTimestamps;
-                window.favoritePixels = favoritePixels;
+                
+                // Handle migration of favorites from old format
+                if (parsed.favorites && Object.keys(parsed.favorites).length > 0) {
+                    console.log('Migrating favorites from old format to separate file...');
+                    favoritePixels = new Map(Object.entries(parsed.favorites));
+                    window.favoritePixels = favoritePixels;
+                    
+                    // Save favorites to separate file
+                    await saveFavorites();
+                    
+                    // Remove favorites from the tiles file and resave without them
+                    const cleanedData = {
+                        downloaded: Array.from(downloadedTiles),
+                        empty: Array.from(emptyTiles),
+                        timestamps: Object.fromEntries(tileTimestamps)
+                        // Note: no favorites property
+                    };
+                    await window.electronAPI.writeFile(filePath, JSON.stringify(cleanedData, null, 2));
+                    
+                    updateStatus(`Migrated ${favoritePixels.size} favorites to separate file`);
+                }
             }
             
-            updateStatus(`Loaded ${downloadedTiles.size} downloaded tiles (${emptyTiles.size} empty) from cache`);
+            // Load favorites from separate file (will create empty if migration didn't happen)
+            await loadFavorites();
+            
+            updateStatus(`Loaded ${downloadedTiles.size} downloaded tiles (${emptyTiles.size} empty) and ${favoritePixels.size} favorites`);
         } catch (error) {
             console.log('No existing downloaded tiles cache found');
             downloadedTiles = new Set();
@@ -110,9 +129,61 @@ async function loadDownloadedTilesList() {
             window.downloadedTiles = downloadedTiles;
             window.emptyTiles = emptyTiles;
             window.tileTimestamps = tileTimestamps;
+            
+            // Still try to load favorites
+            await loadFavorites();
         }
     } else {
         console.log("Not running in Electron, skipping loading downloaded tiles list");
+    }
+}
+async function saveDownloadedTilesList() {
+    if (isElectron()) {
+        try {
+            // Save tiles data without favorites
+            const data = {
+                downloaded: Array.from(downloadedTiles),
+                empty: Array.from(emptyTiles),
+                timestamps: Object.fromEntries(tileTimestamps)
+                // Note: no favorites property anymore
+            };
+            
+            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
+            await window.electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
+            
+            // Save favorites separately
+            await saveFavorites();
+        } catch (error) {
+            console.error('Failed to save downloaded tiles list:', error);
+        }
+    }
+}
+async function loadFavorites() {
+    if (isElectron()) {
+        try {
+            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'favorites.json');
+            const data = await window.electronAPI.readFile(filePath, 'utf8');
+            const parsed = JSON.parse(data);
+            favoritePixels = new Map(Object.entries(parsed));
+            window.favoritePixels = favoritePixels;
+            console.log(`Loaded ${favoritePixels.size} favorites from separate file`);
+        } catch (error) {
+            console.log('No existing favorites file found');
+            favoritePixels = new Map();
+            window.favoritePixels = favoritePixels;
+        }
+    }
+}
+
+async function saveFavorites() {
+    if (isElectron()) {
+        try {
+            const data = Object.fromEntries(favoritePixels);
+            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'favorites.json');
+            await window.electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
+        } catch (error) {
+            console.error('Failed to save favorites:', error);
+        }
     }
 }
 function updateVisibleTiles() {
@@ -169,23 +240,7 @@ function updateVisibleTiles() {
     updateStatus(`Showing ${loadedTiles.size} tiles, ${tilesToRemove.length} removed`);
 }
 
-async function saveDownloadedTilesList() {
-    if (isElectron()) {
-        try {
-            const data = {
-                downloaded: Array.from(downloadedTiles),
-                empty: Array.from(emptyTiles),
-                timestamps: Object.fromEntries(tileTimestamps),
-                favorites: Object.fromEntries(favoritePixels)
-            };
-            
-            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
-            await window.electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
-        } catch (error) {
-            console.error('Failed to save downloaded tiles list:', error);
-        }
-    }
-}
+
 function createFavoriteKey(tileX, tileY, pixelX, pixelY) {
     return `${tileX}-${tileY}-${pixelX}-${pixelY}`;
 }
@@ -230,7 +285,8 @@ function addFavorite(wplaceCoords, name = null) {
     
     favoritePixels.set(key, favorite);
     createFavoriteMarker(favorite);
-    saveDownloadedTilesList();
+    // saveDownloadedTilesList();
+    saveFavorites();
     updateStatus(`Added favorite: ${name}`);
     updateFavoriteButton();
 }
@@ -248,7 +304,8 @@ function removeFavorite(wplaceCoords) {
             favoriteMarkers.delete(key);
         }
         
-        saveDownloadedTilesList();
+        // saveDownloadedTilesList();
+        saveFavorites();
         updateStatus(`Removed favorite: ${favorite.name}`);
         updateFavoriteButton();
     }
@@ -1622,18 +1679,13 @@ async function exportCanvas(startTileX, startTileY, endTileX, endTileY) {
         minTileY = maxTileY;
         maxTileY = temp+ WPLACE_SIZE;
     }
-    try {
-        const result = await downloadTileArea(minTileX, minTileY, maxTileX, maxTileY);
-        const filename = `wplace_tiles_${minTileX}_${minTileY}_to_${maxTileX}_${maxTileY}_${Date.now()}.png`;
-        
-        console.log(`Final image size: ${result.canvas.width}x${result.canvas.height} pixels`);
-        downloadCanvas(result.canvas, filename);
-        
-        return result.canvas;
-    } catch (error) {
-        console.error('Export failed:', error.message);
-        return null;
-    }
+    const result = await downloadTileArea(minTileX, minTileY, maxTileX, maxTileY);
+    const filename = `wplace_tiles_${minTileX}_${minTileY}_to_${maxTileX}_${maxTileY}_${Date.now()}.png`;
+    
+    console.log(`Final image size: ${result.canvas.width}x${result.canvas.height} pixels`);
+    downloadCanvas(result.canvas, filename);
+    
+    return result.canvas;
 }
 function in_range(value, min, max) {
     return value >= min && value <= max;
@@ -1693,43 +1745,39 @@ async function exportCanvasCrop(startTileX, startTileY, startPixelX, startPixelY
     const minPixelY = minTileY * TILE_SIZE + startPixelY;
     const maxPixelX = maxTileX * TILE_SIZE + endPixelX;
     const maxPixelY = maxTileY * TILE_SIZE + endPixelY;
+    console.log("")
     
     console.log(`Exporting cropped area:`);
     console.log(`  Pixel coordinates: (${minPixelX}, ${minPixelY}) to (${maxPixelX}, ${maxPixelY})`);
     console.log(`  Final cropped size: ${maxPixelX - minPixelX + 1}x${maxPixelY - minPixelY + 1} pixels`);
     
-    try {
-        // Download the tile area containing our crop region
-        const result = await downloadTileArea(minTileX, minTileY, maxTileX, maxTileY);
-        
-        // Calculate crop area relative to composite canvas
-        const cropStartX = startPixelX;
-        const cropStartY = startPixelY;
-        const cropWidth = maxPixelX - minPixelX + 1;
-        const cropHeight = maxPixelY - minPixelY + 1;
-        
-        // Create final cropped canvas
-        const finalCanvas = document.createElement('canvas');
-        finalCanvas.width = cropWidth;
-        finalCanvas.height = cropHeight;
-        const finalCtx = finalCanvas.getContext('2d');
-        
-        // Draw the cropped area
-        finalCtx.drawImage(
-            result.canvas,
-            cropStartX, cropStartY, cropWidth, cropHeight,
-            0, 0, cropWidth, cropHeight
-        );
-        
-        const filename = `wplace_crop_${minPixelX}_${minPixelY}_to_${maxPixelX}_${maxPixelY}_${Date.now()}.png`;
-        console.log(`Cropped image dimensions: ${cropWidth}x${cropHeight} pixels`);
-        downloadCanvas(finalCanvas, filename);
-        
-        return finalCanvas;
-    } catch (error) {
-        console.error('Crop export failed:', error.message);
-        return null;
-    }
+    // Download the tile area containing our crop region
+    const result = await downloadTileArea(minTileX, minTileY, maxTileX, maxTileY);
+    
+    // Calculate crop area relative to composite canvas
+    const cropStartX = startPixelX;
+    const cropStartY = startPixelY;
+    const cropWidth = maxPixelX - minPixelX + 1;
+    const cropHeight = maxPixelY - minPixelY + 1;
+    
+    // Create final cropped canvas
+    const finalCanvas = document.createElement('canvas');
+    finalCanvas.width = cropWidth;
+    finalCanvas.height = cropHeight;
+    const finalCtx = finalCanvas.getContext('2d');
+    
+    // Draw the cropped area
+    finalCtx.drawImage(
+        result.canvas,
+        cropStartX, cropStartY, cropWidth, cropHeight,
+        0, 0, cropWidth, cropHeight
+    );
+    
+    const filename = `wplace_crop_${minPixelX}_${minPixelY}_to_${maxPixelX}_${maxPixelY}_${Date.now()}.png`;
+    console.log(`Cropped image dimensions: ${cropWidth}x${cropHeight} pixels`);
+    downloadCanvas(finalCanvas, filename);
+    
+    return finalCanvas;
 }
 
 
