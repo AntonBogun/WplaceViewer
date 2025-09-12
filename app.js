@@ -1114,6 +1114,136 @@ function calculatePixelSizeOnScreen() {
 }
 
 
+function parseNavigationInput(input) {
+    //destroy everything before first questionmark
+    const questionMarkIndex = input.indexOf('?');
+    if (questionMarkIndex !== -1) {
+        input = input.substring(questionMarkIndex + 1);
+    }
+    
+    // Filter to keep only digits, minus, commas, ampersands, and dots
+    const filtered = input.replace(/[^0-9.,&-]/g, '');
+    
+    if (!filtered) {
+        throw new Error('No valid characters found');
+    }
+    
+    // Try splitting by comma first, then by ampersand
+    let parts;
+    let isLatLng = false;
+    
+    if (filtered.includes(',')) {
+        parts = filtered.split(',').map(s => s.trim()).filter(s => s.length > 0);
+        isLatLng = false;
+    } else if (filtered.includes('&')) {
+        parts = filtered.split('&').map(s => s.trim()).filter(s => s.length > 0);
+        isLatLng = true;
+    } else {
+        throw new Error('Input must contain either commas (,) or ampersands (&)');
+    }
+    
+    // Validate number of parts
+    if (isLatLng) {
+        if (parts.length < 2 || parts.length > 3) {
+            throw new Error('Lat/lng input must have 2 or 3 numbers (lat&lng or lat&lng&zoom)');
+        }
+    } else {
+        if (parts.length !== 2 && parts.length !== 4) {
+            throw new Error('Tile input must have 2 or 4 numbers (tileX,tileY or tileX,tileY,pixelX,pixelY)');
+        }
+    }
+    
+    // Parse and validate all numbers
+    const numbers = parts.map(part => {
+        const num = parseFloat(part);
+        if (isNaN(num)) {
+            throw new Error(`Invalid number: "${part}"`);
+        }
+        return num;
+    });
+    
+    return { numbers, isLatLng };
+}
+
+function validateAndNavigate(numbers, isLatLng) {
+    if (isLatLng) {
+        // Lat/lng input
+        const lat = numbers[0];
+        const lng = numbers[1];
+        const zoom = numbers[2] || map.getZoom(); // Use current zoom if not specified
+        
+        // Validate latitude and longitude ranges
+        if (lat < -85.05112878 || lat > 85.05112878) {
+            throw new Error(`Latitude ${lat} out of range (-85.05 to 85.05)`);
+        }
+        if (lng < -180 || lng > 180) {
+            throw new Error(`Longitude ${lng} out of range (-180 to 180)`);
+        }
+        if (zoom < 3 || zoom > 26) {
+            throw new Error(`Zoom ${zoom} out of range (3 to 26)`);
+        }
+        
+        // Navigate to lat/lng
+        map.setView([lat, lng], zoom);
+        updateStatus(`Navigated to ${lat.toFixed(6)}, ${lng.toFixed(6)} at zoom ${zoom}`);
+        
+    } else {
+        // Tile input
+        let tileX, tileY, pixelX = 0, pixelY = 0;
+        
+        if (numbers.length === 2) {
+            [tileX, tileY] = numbers;
+        } else {
+            [tileX, tileY, pixelX, pixelY] = numbers;
+        }
+        
+        // Validate tile coordinates
+        if (tileX < 0 || tileX >= 2048) {
+            throw new Error(`Tile X ${tileX} out of range (0 to 2047)`);
+        }
+        if (tileY < 0 || tileY >= 2048) {
+            throw new Error(`Tile Y ${tileY} out of range (0 to 2047)`);
+        }
+        if (pixelX < 0 || pixelX >= 1000) {
+            throw new Error(`Pixel X ${pixelX} out of range (0 to 999)`);
+        }
+        if (pixelY < 0 || pixelY >= 1000) {
+            throw new Error(`Pixel Y ${pixelY} out of range (0 to 999)`);
+        }
+        
+        // Convert to lat/lng and navigate
+        const [lat, lng] = wplaceToLatLng(tileX, tileY, pixelX, pixelY);
+        map.setView([lat, lng], 15); // Use zoom 15 for tile navigation
+        
+        // Select the pixel if pixel coordinates were provided
+        if (numbers.length === 4) {
+            selectPixel({ tileX, tileY, pixelX, pixelY }, { lat, lng });
+        }
+        
+        updateStatus(`Navigated to tile(${tileX},${tileY}) pixel(${pixelX},${pixelY})`);
+    }
+}
+
+function handleNavigation() {
+    const input = document.getElementById('navigationInput').value.trim();
+    
+    if (!input) {
+        updateStatus('Please enter coordinates to navigate');
+        return;
+    }
+    
+    try {
+        const { numbers, isLatLng } = parseNavigationInput(input);
+        validateAndNavigate(numbers, isLatLng);
+        
+        // Clear the input after successful navigation
+        document.getElementById('navigationInput').value = '';
+        
+    } catch (error) {
+        updateStatus(`Navigation error: ${error.message}`);
+        console.error('Navigation error:', error);
+    }
+}
 
 
 function setupControls() {
@@ -1364,6 +1494,30 @@ function setupControls() {
         controlsMenu.style.display = menuVisible ? 'block' : 'none';
         infoPanel.style.display = menuVisible ? 'block' : 'none';
         toggleMenuBtn.textContent = menuVisible ? 'Hide Menu' : 'Show Menu';
+    });
+    // Navigation input and button
+    const navigationInput = document.getElementById('navigationInput');
+    const navigateBtn = document.getElementById('navigateBtn');
+
+    // Handle navigation button click
+    navigateBtn.addEventListener('click', handleNavigation);
+
+    // Handle Enter key in navigation input
+    navigationInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            handleNavigation();
+        }
+    });
+
+    // Handle Ctrl+V paste and auto-navigate
+    navigationInput.addEventListener('keydown', function(e) {
+        if (e.ctrlKey && e.key === 'v') {
+            // Small delay to let paste complete
+            setTimeout(() => {
+                handleNavigation();
+            }, 10);
+        }
     });
 }
 
