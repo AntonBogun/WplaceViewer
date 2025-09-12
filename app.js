@@ -186,6 +186,69 @@ async function saveFavorites() {
         }
     }
 }
+async function getLastLocation(){
+    if (isElectron()) {
+        try {
+            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
+            const data = await window.electronAPI.readFile(filePath, 'utf8');
+            const location = JSON.parse(data);
+            console.log('Loaded last location:', location);
+            return location;
+        } catch (error) {
+            console.log('No last location file found');
+            return null;
+        }
+    }
+}
+async function loadLastLocation() {
+    if (isElectron()) {
+        try {
+            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
+            const data = await window.electronAPI.readFile(filePath, 'utf8');
+            const location = JSON.parse(data);
+            
+            // Validate the location data
+            if (location.lat && location.lng && location.zoom) {
+                console.log(`Loading last location: ${location.lat}, ${location.lng} at zoom ${location.zoom}`);
+                map.setView([location.lat, location.lng], location.zoom);
+                updateStatus(`Restored last location: ${location.lat.toFixed(4)}, ${location.lng.toFixed(4)}`);
+                return true;
+            }
+        } catch (error) {
+            console.log('No last location file found or invalid data');
+        }
+    }
+    return false;
+}
+
+async function saveLastLocation() {
+    if (isElectron()) {
+        try {
+            const center = map.getCenter();
+            const zoom = map.getZoom();
+            
+            const location = {
+                lat: center.lat,
+                lng: center.lng,
+                zoom: zoom,
+                timestamp: Date.now()
+            };
+            
+            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
+            await window.electronAPI.writeFile(filePath, JSON.stringify(location, null, 2));
+        } catch (error) {
+            console.error('Failed to save last location:', error);
+        }
+    }
+}
+// Throttle location saving to avoid excessive file writes
+let saveLocationTimeout;
+function throttledSaveLocation() {
+    if (saveLocationTimeout) {
+        clearTimeout(saveLocationTimeout);
+    }
+    saveLocationTimeout = setTimeout(saveLastLocation, 1000); // Save 1 second after last movement
+}
 function updateVisibleTiles() {
     const pixelSize = calculatePixelSizeOnScreen();
     if (pixelSize < MIN_PIXEL_SIZE) {
@@ -850,13 +913,14 @@ function getWplaceViewInfo() {
 }
 
 // Initialize map when page loads
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
     if(!isElectron()) {
         console.error("This application is intended to run in Electron.");
         alert("This application is intended to run in Electron.");
         return;
     }
-    initializeMap();
+    const lastLocation = await getLastLocation();
+    initializeMap(lastLocation);
     setupControls();
     setupEventListeners();
 });
@@ -976,11 +1040,13 @@ function updateGrid() {
         addGridToCurrentView();
     }
 }
-function initializeMap() {
+function initializeMap(lastLocation) {
     // Create map centered on world view
     map = L.map('map', {
-        center: [0, 0],
-        zoom: 2,
+        // center: [0, 0],
+        // zoom: 2,
+        center: lastLocation ? [lastLocation.lat, lastLocation.lng] : [0, 0],
+        zoom: lastLocation ? lastLocation.zoom : 2,
         zoomControl: false, // We'll add custom controls
         attributionControl: true,
         worldCopyJump: true, // Seamless horizontal panning
@@ -1034,7 +1100,7 @@ function initializeMap() {
     createWplaceTileLayer();
     createFavoriteLayer();
     createCropPreviewLayer();
-
+    // loadLastLocation();
     updateStatus('Map initialized');
 }
 
@@ -1792,6 +1858,7 @@ function setupEventListeners() {
         updateVisibleTiles(); // Manage visible tiles efficiently
         loadAllFavorites(); // Add this line
         queueTileDownloads();
+        throttledSaveLocation();
     });
     
     map.on('mousemove', updateMouseInfo);
@@ -1815,8 +1882,13 @@ function setupEventListeners() {
     // Initial setup
     loadDownloadedTilesList().then(() => {
         console.log(`Loaded ${downloadedTiles.size} downloaded tiles from storage`);
+        // loadLastLocation(); // Then restore last location
         updateVisibleTiles(); // Load only visible tiles
         queueTileDownloads(); // Then queue new downloads
+        // loadLastLocation();
+        // setTimeout(() => {
+        //     loadLastLocation();
+        // }, 500); // Slight delay to ensure map is ready
     });
 }
 
