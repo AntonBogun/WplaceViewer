@@ -73,172 +73,156 @@ function isElectron() {
 }
 
 async function loadDownloadedTilesList() {
-    if (isElectron()) {
-        try {
-            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
-            const data = await window.electronAPI.readFile(filePath, 'utf8');
-            const parsed = JSON.parse(data);
-            
-            // Handle both old format (array) and new format (object)
-            if (Array.isArray(parsed)) {
-                downloadedTiles = new Set(parsed);
-                emptyTiles = new Set();
-                tileTimestamps = new Map(); // No timestamps for old data
-                window.downloadedTiles = downloadedTiles;
-                window.emptyTiles = emptyTiles;
-                window.tileTimestamps = tileTimestamps;
-            } else {
-                downloadedTiles = new Set(parsed.downloaded || []);
-                emptyTiles = new Set(parsed.empty || []);
-                tileTimestamps = new Map(Object.entries(parsed.timestamps || {}));
-                window.downloadedTiles = downloadedTiles;
-                window.emptyTiles = emptyTiles;
-                window.tileTimestamps = tileTimestamps;
-                
-                // Handle migration of favorites from old format
-                if (parsed.favorites && Object.keys(parsed.favorites).length > 0) {
-                    console.log('Migrating favorites from old format to separate file...');
-                    favoritePixels = new Map(Object.entries(parsed.favorites));
-                    window.favoritePixels = favoritePixels;
-                    
-                    // Save favorites to separate file
-                    await saveFavorites();
-                    
-                    // Remove favorites from the tiles file and resave without them
-                    const cleanedData = {
-                        downloaded: Array.from(downloadedTiles),
-                        empty: Array.from(emptyTiles),
-                        timestamps: Object.fromEntries(tileTimestamps)
-                        // Note: no favorites property
-                    };
-                    await window.electronAPI.writeFile(filePath, JSON.stringify(cleanedData, null, 2));
-                    
-                    updateStatus(`Migrated ${favoritePixels.size} favorites to separate file`);
-                }
-            }
-            
-            // Load favorites from separate file (will create empty if migration didn't happen)
-            await loadFavorites();
-            
-            updateStatus(`Loaded ${downloadedTiles.size} downloaded tiles (${emptyTiles.size} empty) and ${favoritePixels.size} favorites`);
-        } catch (error) {
-            console.log('No existing downloaded tiles cache found');
-            downloadedTiles = new Set();
+    try {
+        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
+        const data = await window.electronAPI.readFile(filePath, 'utf8');
+        const parsed = JSON.parse(data);
+        
+        // Handle both old format (array) and new format (object)
+        if (Array.isArray(parsed)) {
+            downloadedTiles = new Set(parsed);
             emptyTiles = new Set();
-            tileTimestamps = new Map();
+            tileTimestamps = new Map(); // No timestamps for old data
+            window.downloadedTiles = downloadedTiles;
+            window.emptyTiles = emptyTiles;
+            window.tileTimestamps = tileTimestamps;
+        } else {
+            downloadedTiles = new Set(parsed.downloaded || []);
+            emptyTiles = new Set(parsed.empty || []);
+            tileTimestamps = new Map(Object.entries(parsed.timestamps || {}));
             window.downloadedTiles = downloadedTiles;
             window.emptyTiles = emptyTiles;
             window.tileTimestamps = tileTimestamps;
             
-            // Still try to load favorites
-            await loadFavorites();
+            // Handle migration of favorites from old format
+            if (parsed.favorites && Object.keys(parsed.favorites).length > 0) {
+                console.log('Migrating favorites from old format to separate file...');
+                favoritePixels = new Map(Object.entries(parsed.favorites));
+                window.favoritePixels = favoritePixels;
+                
+                // Save favorites to separate file
+                await saveFavorites();
+                
+                // Remove favorites from the tiles file and resave without them
+                const cleanedData = {
+                    downloaded: Array.from(downloadedTiles),
+                    empty: Array.from(emptyTiles),
+                    timestamps: Object.fromEntries(tileTimestamps)
+                    // Note: no favorites property
+                };
+                await window.electronAPI.writeFile(filePath, JSON.stringify(cleanedData, null, 2));
+                
+                updateStatus(`Migrated ${favoritePixels.size} favorites to separate file`);
+            }
         }
-    } else {
-        console.log("Not running in Electron, skipping loading downloaded tiles list");
+        
+        // Load favorites from separate file (will create empty if migration didn't happen)
+        await loadFavorites();
+        
+        updateStatus(`Loaded ${downloadedTiles.size} downloaded tiles (${emptyTiles.size} empty) and ${favoritePixels.size} favorites`);
+    } catch (error) {
+        console.log('No existing downloaded tiles cache found');
+        downloadedTiles = new Set();
+        emptyTiles = new Set();
+        tileTimestamps = new Map();
+        window.downloadedTiles = downloadedTiles;
+        window.emptyTiles = emptyTiles;
+        window.tileTimestamps = tileTimestamps;
+        
+        // Still try to load favorites
+        await loadFavorites();
     }
 }
 async function saveDownloadedTilesList() {
-    if (isElectron()) {
-        try {
-            // Save tiles data without favorites
-            const data = {
-                downloaded: Array.from(downloadedTiles),
-                empty: Array.from(emptyTiles),
-                timestamps: Object.fromEntries(tileTimestamps)
-                // Note: no favorites property anymore
-            };
-            
-            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
-            await window.electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
-            
-            // Save favorites separately
-            await saveFavorites();
-        } catch (error) {
-            console.error('Failed to save downloaded tiles list:', error);
-        }
+    try {
+        // Save tiles data without favorites
+        const data = {
+            downloaded: Array.from(downloadedTiles),
+            empty: Array.from(emptyTiles),
+            timestamps: Object.fromEntries(tileTimestamps)
+            // Note: no favorites property anymore
+        };
+        
+        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
+        await window.electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
+        
+        // Save favorites separately
+        await saveFavorites();
+    } catch (error) {
+        console.error('Failed to save downloaded tiles list:', error);
     }
 }
 async function loadFavorites() {
-    if (isElectron()) {
-        try {
-            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'favorites.json');
-            const data = await window.electronAPI.readFile(filePath, 'utf8');
-            const parsed = JSON.parse(data);
-            favoritePixels = new Map(Object.entries(parsed));
-            window.favoritePixels = favoritePixels;
-            console.log(`Loaded ${favoritePixels.size} favorites from separate file`);
-        } catch (error) {
-            console.log('No existing favorites file found');
-            favoritePixels = new Map();
-            window.favoritePixels = favoritePixels;
-        }
+    try {
+        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'favorites.json');
+        const data = await window.electronAPI.readFile(filePath, 'utf8');
+        const parsed = JSON.parse(data);
+        favoritePixels = new Map(Object.entries(parsed));
+        window.favoritePixels = favoritePixels;
+        console.log(`Loaded ${favoritePixels.size} favorites from separate file`);
+    } catch (error) {
+        console.log('No existing favorites file found');
+        favoritePixels = new Map();
+        window.favoritePixels = favoritePixels;
     }
 }
 
 async function saveFavorites() {
-    if (isElectron()) {
-        try {
-            const data = Object.fromEntries(favoritePixels);
-            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'favorites.json');
-            await window.electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
-        } catch (error) {
-            console.error('Failed to save favorites:', error);
-        }
+    try {
+        const data = Object.fromEntries(favoritePixels);
+        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'favorites.json');
+        await window.electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
+    } catch (error) {
+        console.error('Failed to save favorites:', error);
     }
 }
 async function getLastLocation(){
-    if (isElectron()) {
-        try {
-            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
-            const data = await window.electronAPI.readFile(filePath, 'utf8');
-            const location = JSON.parse(data);
-            console.log('Loaded last location:', location);
-            return location;
-        } catch (error) {
-            console.log('No last location file found');
-            return null;
-        }
+    try {
+        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
+        const data = await window.electronAPI.readFile(filePath, 'utf8');
+        const location = JSON.parse(data);
+        console.log('Loaded last location:', location);
+        return location;
+    } catch (error) {
+        console.log('No last location file found');
+        return null;
     }
 }
 async function loadLastLocation() {
-    if (isElectron()) {
-        try {
-            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
-            const data = await window.electronAPI.readFile(filePath, 'utf8');
-            const location = JSON.parse(data);
-            
-            // Validate the location data
-            if (location.lat && location.lng && location.zoom) {
-                console.log(`Loading last location: ${location.lat}, ${location.lng} at zoom ${location.zoom}`);
-                map.setView([location.lat, location.lng], location.zoom);
-                updateStatus(`Restored last location: ${location.lat.toFixed(4)}, ${location.lng.toFixed(4)}`);
-                return true;
-            }
-        } catch (error) {
-            console.log('No last location file found or invalid data');
+    try {
+        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
+        const data = await window.electronAPI.readFile(filePath, 'utf8');
+        const location = JSON.parse(data);
+        
+        // Validate the location data
+        if (location.lat && location.lng && location.zoom) {
+            console.log(`Loading last location: ${location.lat}, ${location.lng} at zoom ${location.zoom}`);
+            map.setView([location.lat, location.lng], location.zoom);
+            updateStatus(`Restored last location: ${location.lat.toFixed(4)}, ${location.lng.toFixed(4)}`);
+            return true;
         }
+    } catch (error) {
+        console.log('No last location file found or invalid data');
     }
     return false;
 }
 
 async function saveLastLocation() {
-    if (isElectron()) {
-        try {
-            const center = map.getCenter();
-            const zoom = map.getZoom();
-            
-            const location = {
-                lat: center.lat,
-                lng: center.lng,
-                zoom: zoom,
-                timestamp: Date.now()
-            };
-            
-            const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
-            await window.electronAPI.writeFile(filePath, JSON.stringify(location, null, 2));
-        } catch (error) {
-            console.error('Failed to save last location:', error);
-        }
+    try {
+        const center = map.getCenter();
+        const zoom = map.getZoom();
+        
+        const location = {
+            lat: center.lat,
+            lng: center.lng,
+            zoom: zoom,
+            timestamp: Date.now()
+        };
+        
+        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
+        await window.electronAPI.writeFile(filePath, JSON.stringify(location, null, 2));
+    } catch (error) {
+        console.error('Failed to save last location:', error);
     }
 }
 // Throttle location saving to avoid excessive file writes
@@ -249,7 +233,7 @@ function throttledSaveLocation() {
     }
     saveLocationTimeout = setTimeout(saveLastLocation, 1000); // Save 1 second after last movement
 }
-function updateVisibleTiles() {
+async function updateVisibleTiles() {
     const pixelSize = calculatePixelSizeOnScreen();
     if (pixelSize < MIN_PIXEL_SIZE) {
         wplaceTileLayer.clearLayers();
@@ -281,7 +265,7 @@ function updateVisibleTiles() {
                 if (downloadedTiles.has(normalizedTileKey) && 
                     !loadedTiles.has(tileKey) && 
                     !emptyTiles.has(normalizedTileKey)) {
-                    loadWplaceTile(tileX, tileY); // Use original coords
+                    await loadWplaceTile(tileX, tileY, false);
                 }
             }
         }
@@ -455,23 +439,18 @@ function isTileStale(tileKey) {
 
 // Create distributed directory structure
 function getTileFilePath(tileX, tileY) {
-    if (isElectron()) {
-        // Distribute tiles across subdirectories to avoid filesystem slowdown
-        const subDir1 = Math.floor(tileX / 64);
-        const subDir2 = Math.floor(tileY / 64);
-        return window.electronAPI.join(window.electronAPI.cwd(), 'tiles', `${subDir1}`, `${subDir2}`, `${tileX}_${tileY}.png`);
-    }
-    return `tiles/${tileX}_${tileY}.png`;
+    // Distribute tiles across subdirectories to avoid filesystem slowdown
+    const subDir1 = Math.floor(tileX / 64);
+    const subDir2 = Math.floor(tileY / 64);
+    return window.electronAPI.join(window.electronAPI.cwd(), 'tiles', `${subDir1}`, `${subDir2}`, `${tileX}_${tileY}.png`);
 }
 
 async function ensureDirectoryExists(filePath) {
-    if (isElectron()) {
-        const dir = window.electronAPI.dirname(filePath);
-        try {
-            await window.electronAPI.mkdir(dir, { recursive: true });
-        } catch (error) {
-            // Directory might already exist
-        }
+    const dir = window.electronAPI.dirname(filePath);
+    try {
+        await window.electronAPI.mkdir(dir, { recursive: true });
+    } catch (error) {
+        // Directory might already exist
     }
 }
 
@@ -527,10 +506,13 @@ function initDownloadTile(tileX,tileY){
          || downloadingTiles.has(tileKey)) {
         return false;
     }
+    if(isTileStale(tileKey) && autoRefreshEnabled){
+        console.log(`Tile ${tileX},${tileY} is stale, re-downloading`);
+    }
     downloadingTiles.add(tileKey);
     activeDownloads++;
     // Show downloading status, unnormalized
-    showTileStatus(tileX, tileY, 'downloading'+(isTileStale(tileKey) ? ' (stale)' : ''));
+    showTileStatus(tileX, tileY, 'downloading');
     return true;
 }
 
@@ -574,14 +556,13 @@ async function downloadTile(tileX, tileY) {
         
         const blob = await response.blob();
         
-        if (isElectron()) {
-            // Save to file system
-            const filePath = getTileFilePath(tileX, tileY);
-            await ensureDirectoryExists(filePath);
-            
-            const buffer = await blob.arrayBuffer();
-            await window.electronAPI.writeFile(filePath, window.electronAPI.bufferFrom(buffer));
-        }
+        // Save to file system
+        const filePath = getTileFilePath(tileX, tileY);
+        await ensureDirectoryExists(filePath);
+        
+        const buffer = await blob.arrayBuffer();
+        await window.electronAPI.writeFile(filePath, window.electronAPI.bufferFrom(buffer));
+
         
         // Mark as downloaded
         downloadedTiles.add(tileKey);
@@ -597,7 +578,8 @@ async function downloadTile(tileX, tileY) {
         if (viewInfo.visibleTiles && 
             tileX >= viewInfo.visibleTiles.startX && tileX <= viewInfo.visibleTiles.endX &&
             tileY >= viewInfo.visibleTiles.startY && tileY <= viewInfo.visibleTiles.endY) {
-            loadWplaceTile(tileX, tileY);
+            //force a reload if exists
+            await loadWplaceTile(tileX, tileY,true);
         }
         
         updateStatus(`Downloaded tile ${tileX},${tileY} (${downloadedTiles.size} total)`);
@@ -790,12 +772,21 @@ function queueTileDownloads() {
 }
 
 
-function loadWplaceTile(tileX, tileY) {
+async function loadWplaceTile(tileX, tileY, force=false) {
     const tileKey = `${tileX}-${tileY}`;
     
     // Check if already loaded
-    if (loadedTiles.has(tileKey)) {
+    if (loadedTiles.has(tileKey) && !force) {
         return loadedTiles.get(tileKey);
+    }else if(loadedTiles.has(tileKey) && force){
+        //remove old one
+        wplaceTileLayer.removeLayer(loadedTiles.get(tileKey));
+        loadedTiles.delete(tileKey);
+        await new Promise(r => setTimeout(r, 100)); //small delay to ensure removal
+        if(loadedTiles.has(tileKey)){
+            console.warn(`Tile ${tileKey} still in loadedTiles after removal, skipping reload`);
+            return loadedTiles.get(tileKey);
+        }
     }
     
     // Normalize coordinates for file access
@@ -825,7 +816,7 @@ function loadWplaceTile(tileX, tileY) {
     
     // Use normalized coordinates for file path
     const tilePath = getTileFilePath(normalizedTileX, normalizedTileY);
-    const fileUrl = isElectron() ? `file://${tilePath}` : tilePath;
+    const fileUrl = `file://${tilePath}`;
     
     const imageOverlay = L.imageOverlay(fileUrl, [
         [bottomLat, leftLng],
@@ -1591,12 +1582,7 @@ function addGridToCurrentView() {
     }
 }
 
-async function openTileLocation(tileX, tileY) {
-    if (!isElectron()) {
-        updateStatus('File operations only available in Electron');
-        return;
-    }
-    
+async function openTileLocation(tileX, tileY) {    
     const normalizedTileX = normalizeWplaceTileX(tileX);
     const normalizedTileY = tileY;
     const normalizedTileKey = `${normalizedTileX}-${normalizedTileY}`;
@@ -1648,7 +1634,7 @@ function updateCropPreview() {
     
     // Convert to lat/lng coordinates
     const [startLat, startLng] = wplaceToLatLng(startTileX, startTileY, startPixelX, startPixelY);
-    const [endLat, endLng] = wplaceToLatLng(endTileX, endTileY, endPixelX, endPixelY);
+    const [endLat, endLng] = wplaceToLatLng(endTileX, endTileY, endPixelX+1, endPixelY+1);
     
     // Create preview rectangle
     const previewRect = L.rectangle([
@@ -1676,8 +1662,8 @@ function validateCropArea(startTileX, startTileY, startPixelX, startPixelY, endT
     const width = Math.abs(endGlobalX - startGlobalX) + 1;
     const height = Math.abs(endGlobalY - startGlobalY) + 1;
     
-    if (width > 6000 || height > 6000) {
-        throw new Error(`Crop area too large: ${width}x${height} pixels. Maximum allowed: 6000x6000`);
+    if (width > 5000 || height > 5000) {
+        throw new Error(`Crop area too large: ${width}x${height} pixels. Maximum allowed: 5000x5000`);
     }
     
     return { width, height };
@@ -2006,10 +1992,10 @@ async function exportCanvasCrop(startTileX, startTileY, startPixelX, startPixelY
 
 function setupEventListeners() {
     // Update info panel on map events
-    map.on('zoomend moveend', function() {
+    map.on('zoomend moveend', async function() {
         updateMapInfo();
         updateTileStatusDisplay();
-        updateVisibleTiles(); // Manage visible tiles efficiently
+        await updateVisibleTiles(); // Manage visible tiles efficiently
         loadAllFavorites(); // Add this line
         queueTileDownloads();
         throttledSaveLocation();
