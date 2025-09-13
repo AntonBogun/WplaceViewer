@@ -1,6 +1,7 @@
 console.log('=== PRELOAD SCRIPT STARTING ===');
 console.log('process.cwd():', process.cwd());
 
+// const { contextBridge, ipcRenderer} = require('electron');
 const { contextBridge } = require('electron');
 const fs = require('fs').promises;
 const path = require('path');
@@ -16,6 +17,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Path operations
     join: (...paths) => path.join(...paths),
     dirname: (filePath) => path.dirname(filePath),
+    getAppPath:  () => {
+        // For portable builds, electron-builder sets this environment variable
+        if (process.env.PORTABLE_EXECUTABLE_DIR) {
+            return process.env.PORTABLE_EXECUTABLE_DIR;
+        }
+        
+        // Fallback for development or non-portable builds
+        return path.dirname(process.execPath);
+    },
     
     // Process info
     cwd: () => process.cwd(),
@@ -26,7 +36,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     
     // Shell operations
     openPath: (filePath) => require('electron').shell.showItemInFolder(filePath),
-    
+
     // Check if running in Electron
     isElectron: true
 });

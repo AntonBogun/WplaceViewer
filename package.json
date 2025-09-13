@@ -1,6 +1,6 @@
 {
   "name": "wplace-viewer",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "A better wplace tile viewer",
   "main": "main.js",
   "scripts": {

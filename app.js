@@ -6,7 +6,23 @@ let baseLayers = {};
 let selectedPixel = null;
 let selectionHighlight = null;
 
+let appPath = null;
 
+async function getAppPath() {
+  if (!appPath) {
+    appPath = await window.electronAPI.getAppPath();
+  }
+  return appPath;
+}
+// Initialize immediately when the script loads
+let appPathInitialized = false;
+(async () => {
+  if (typeof window !== 'undefined' && window.electronAPI) {
+    await getAppPath();
+    appPathInitialized = true;
+    console.log('App path initialized:', appPath);
+  }
+})();
 
 // wplace coordinate conversion constants
 const mapSize = 2048000; // Total pixels in Web Mercator at max zoom (2048 tiles * 1000 pixels each)
@@ -74,7 +90,7 @@ function isElectron() {
 
 async function loadDownloadedTilesList() {
     try {
-        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
+        const filePath = window.electronAPI.join(appPath, 'downloaded_tiles.json');
         const data = await window.electronAPI.readFile(filePath, 'utf8');
         const parsed = JSON.parse(data);
         
@@ -143,7 +159,7 @@ async function saveDownloadedTilesList() {
             // Note: no favorites property anymore
         };
         
-        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'downloaded_tiles.json');
+        const filePath = window.electronAPI.join(appPath, 'downloaded_tiles.json');
         await window.electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
         
         // Save favorites separately
@@ -154,7 +170,7 @@ async function saveDownloadedTilesList() {
 }
 async function loadFavorites() {
     try {
-        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'favorites.json');
+        const filePath = window.electronAPI.join(appPath, 'favorites.json');
         const data = await window.electronAPI.readFile(filePath, 'utf8');
         const parsed = JSON.parse(data);
         favoritePixels = new Map(Object.entries(parsed));
@@ -170,7 +186,7 @@ async function loadFavorites() {
 async function saveFavorites() {
     try {
         const data = Object.fromEntries(favoritePixels);
-        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'favorites.json');
+        const filePath = window.electronAPI.join(appPath, 'favorites.json');
         await window.electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
     } catch (error) {
         console.error('Failed to save favorites:', error);
@@ -178,7 +194,7 @@ async function saveFavorites() {
 }
 async function getLastLocation(){
     try {
-        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
+        const filePath = window.electronAPI.join(appPath, 'last_location.json');
         const data = await window.electronAPI.readFile(filePath, 'utf8');
         const location = JSON.parse(data);
         console.log('Loaded last location:', location);
@@ -190,7 +206,7 @@ async function getLastLocation(){
 }
 async function loadLastLocation() {
     try {
-        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
+        const filePath = window.electronAPI.join(appPath, 'last_location.json');
         const data = await window.electronAPI.readFile(filePath, 'utf8');
         const location = JSON.parse(data);
         
@@ -219,7 +235,7 @@ async function saveLastLocation() {
             timestamp: Date.now()
         };
         
-        const filePath = window.electronAPI.join(window.electronAPI.cwd(), 'last_location.json');
+        const filePath = window.electronAPI.join(appPath, 'last_location.json');
         await window.electronAPI.writeFile(filePath, JSON.stringify(location, null, 2));
     } catch (error) {
         console.error('Failed to save last location:', error);
@@ -442,7 +458,7 @@ function getTileFilePath(tileX, tileY) {
     // Distribute tiles across subdirectories to avoid filesystem slowdown
     const subDir1 = Math.floor(tileX / 64);
     const subDir2 = Math.floor(tileY / 64);
-    return window.electronAPI.join(window.electronAPI.cwd(), 'tiles', `${subDir1}`, `${subDir2}`, `${tileX}_${tileY}.png`);
+    return window.electronAPI.join(appPath, 'tiles', `${subDir1}`, `${subDir2}`, `${tileX}_${tileY}.png`);
 }
 
 async function ensureDirectoryExists(filePath) {
@@ -909,6 +925,9 @@ document.addEventListener('DOMContentLoaded', async function() {
         console.error("This application is intended to run in Electron.");
         alert("This application is intended to run in Electron.");
         return;
+    }
+    if(!appPathInitialized) {
+        await getAppPath();
     }
     const lastLocation = await getLastLocation();
     initializeMap(lastLocation);
@@ -1996,7 +2015,7 @@ function setupEventListeners() {
         updateMapInfo();
         updateTileStatusDisplay();
         await updateVisibleTiles(); // Manage visible tiles efficiently
-        loadAllFavorites(); // Add this line
+        loadAllFavorites();
         queueTileDownloads();
         throttledSaveLocation();
     });
@@ -2062,7 +2081,7 @@ function selectPixel(wplaceCoords, latlng) {
     
     // Update selection info
     updateSelectionInfo();
-    updateFavoriteButton(); // Add this line
+    updateFavoriteButton();
 }
 
 function updateSelectionInfo() {

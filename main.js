@@ -2,10 +2,21 @@
 // console.log('Current __dirname:', __dirname);
 // console.log('process.cwd():', process.cwd());
 
+// const { app, ipcMain, BrowserWindow, Menu } = require('electron');
 const { app, BrowserWindow, Menu } = require('electron');
 const path = require('path');
 
 let mainWindow;
+
+// ipcMain.handle('get-app-path', () => {
+//   // For packaged apps, use the directory where the executable is
+//   // For development, use the app path
+//   if (app.isPackaged) {
+//     return path.dirname(process.execPath);
+//   } else {
+//     return app.getAppPath();
+//   }
+// });
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -17,9 +28,10 @@ function createWindow() {
       enableRemoteModule: false,
       webSecurity: true,
       sandbox: false,
-      preload: path.join(__dirname, 'preload.js') // Add this line
+      devTools: true,
+      preload: path.join(__dirname, 'preload.js')
     },
-    icon: path.join(__dirname, 'assets/icon.png'), // optional
+    icon: path.join(__dirname, 'assets/icon.png'),
     title: 'wplace Viewer'
   });
 
