@@ -14,6 +14,18 @@ async function getAppPath() {
   }
   return appPath;
 }
+async function loadMapConfig() {
+  try {
+    const appPath = await getAppPath();
+    const configPath = window.electronAPI.join(appPath, 'map_api.json');
+    const data = await window.electronAPI.readFile(configPath, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.log('No map_api.json found, using default free tiles');
+    return null;
+  }
+}
+
 // Initialize immediately when the script loads
 let appPathInitialized = false;
 (async () => {
@@ -832,7 +844,8 @@ async function loadWplaceTile(tileX, tileY, force=false) {
     
     // Use normalized coordinates for file path
     const tilePath = getTileFilePath(normalizedTileX, normalizedTileY);
-    const fileUrl = `file://${tilePath}`;
+    const timeNow = Date.now();
+    const fileUrl = `file://${tilePath}?t=${timeNow}`; // Cache-busting query param
     
     const imageOverlay = L.imageOverlay(fileUrl, [
         [bottomLat, leftLng],
@@ -930,7 +943,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         await getAppPath();
     }
     const lastLocation = await getLastLocation();
-    initializeMap(lastLocation);
+    await initializeMap(lastLocation);
     setupControls();
     setupEventListeners();
 });
@@ -1050,8 +1063,10 @@ function updateGrid() {
         addGridToCurrentView();
     }
 }
-function initializeMap(lastLocation) {
+async function initializeMap(lastLocation) {
+    const mapConfig = await loadMapConfig();
     // Create map centered on world view
+    
     map = L.map('map', {
         // center: [0, 0],
         // zoom: 2,
@@ -1077,40 +1092,63 @@ function initializeMap(lastLocation) {
     }).addTo(map);
 
     // Define base layers
-    baseLayers = {
-        osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors',
-            maxZoom: 19,
-            noWrap: false,
-            headers: {
-            'User-Agent': 'wplace-viewer/1.0 (your-email@example.com)'
-            }
-        }),
-        satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-            attribution: '© Esri, Maxar, Earthstar Geographics',
-            maxZoom: 18,
-            noWrap: false,
-            headers: {
-            'User-Agent': 'wplace-viewer/1.0 (your-email@example.com)'
-            }
-        }),
-        topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenTopoMap contributors',
-            maxZoom: 17,
-            noWrap: false,
-            headers: {
-            'User-Agent': 'wplace-viewer/1.0 (your-email@example.com)'
-            }
-        }),
-        dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-            attribution: '© CARTO, © OpenStreetMap contributors',
-            maxZoom: 19,
-            noWrap: false,
-            headers: {
-            'User-Agent': 'wplace-viewer/1.0 (your-email@example.com)'
-            }
-        })
-    };
+    if (mapConfig && mapConfig.apiKey) {
+        console.log(`Using ${mapConfig.provider} tiles with API key`);
+        baseLayers = {
+            osm: L.tileLayer(mapConfig.tileUrls.osm.replace('{apiKey}', mapConfig.apiKey), {
+                attribution: `© ${mapConfig.provider}, © OpenStreetMap contributors`,
+                maxZoom: 19,
+                noWrap: false,
+                tileSize: 512,        // Set to actual tile size
+                zoomOffset: -1        // Correct the coordinate system
+            }),
+            satellite: L.tileLayer(mapConfig.tileUrls.satellite.replace('{apiKey}', mapConfig.apiKey), {
+                attribution: `© ${mapConfig.provider}`,
+                maxZoom: 18,
+                noWrap: false,
+                tileSize: 512,
+                zoomOffset: -1
+            }),
+            topo: L.tileLayer(mapConfig.tileUrls.topo.replace('{apiKey}', mapConfig.apiKey), {
+                attribution: `© ${mapConfig.provider}, © OpenStreetMap contributors`,
+                maxZoom: 17,
+                noWrap: false,
+                tileSize: 512,
+                zoomOffset: -1
+            }),
+            dark: L.tileLayer(mapConfig.tileUrls.dark.replace('{apiKey}', mapConfig.apiKey), {
+                attribution: `© ${mapConfig.provider}, © OpenStreetMap contributors`,
+                maxZoom: 19,
+                noWrap: false,
+                tileSize: 512,
+                zoomOffset: -1
+            })
+        };
+    } else {
+        // Fallback to free tiles
+        baseLayers = {
+            osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors',
+                maxZoom: 19,
+                noWrap: false
+            }),
+            satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                attribution: '© Esri, Maxar, Earthstar Geographics',
+                maxZoom: 18,
+                noWrap: false
+            }),
+            topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenTopoMap contributors',
+                maxZoom: 17,
+                noWrap: false
+            }),
+            dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '© CARTO, © OpenStreetMap contributors',
+                maxZoom: 19,
+                noWrap: false
+            })
+        };
+    }
 
     // Set initial base layer
     currentBaseLayer = baseLayers.osm;

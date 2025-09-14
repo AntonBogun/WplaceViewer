@@ -4,3 +4,4 @@ downloaded_tiles.json
 favorites.json
 last_location.json
 dist/*
+map_api.json

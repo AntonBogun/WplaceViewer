@@ -17,14 +17,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Path operations
     join: (...paths) => path.join(...paths),
     dirname: (filePath) => path.dirname(filePath),
-    getAppPath:  () => {
-        // For portable builds, electron-builder sets this environment variable
-        if (process.env.PORTABLE_EXECUTABLE_DIR) {
-            return process.env.PORTABLE_EXECUTABLE_DIR;
-        }
+    getAppPath: () => {
+        // Check if we're in development mode
+        const isDev = process.env.NODE_ENV === 'development' || process.defaultApp || /[\\/]electron-prebuilt[\\/]/.test(process.execPath) || /[\\/]electron[\\/]/.test(process.execPath);
         
-        // Fallback for development or non-portable builds
-        return path.dirname(process.execPath);
+        if (isDev) {
+            // In development, use the project root directory
+            return process.cwd();
+        } else if (process.env.PORTABLE_EXECUTABLE_DIR) {
+            // In portable build, use the real executable directory
+            return process.env.PORTABLE_EXECUTABLE_DIR;
+        } else {
+            // Fallback for other packaged builds
+            return path.dirname(process.execPath);
+        }
     },
     
     // Process info

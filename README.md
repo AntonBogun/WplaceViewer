@@ -74,7 +74,19 @@ npm install -g electron
 
 - If you have issues with Node.js versions, use `nvm list` and `nvm use <version>` to switch.
 - Make sure your PowerShell is running as Administrator for system installs.
-
+- If OpenStreetMap tiles return "App Blocked", get an API key from [MapTiler](https://www.maptiler.com/cloud/) and create a map_api.json file with contents:
+```json
+{
+  "provider": "maptiler",
+  "apiKey": "<YOUR_API_KEY>",
+  "tileUrls": {
+    "osm": "https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key={apiKey}",
+    "satellite": "https://api.maptiler.com/maps/satellite/{z}/{x}/{y}.png?key={apiKey}",
+    "topo": "https://api.maptiler.com/maps/topo-v2/{z}/{x}/{y}.png?key={apiKey}",
+    "dark": "https://api.maptiler.com/maps/basic-dark/{z}/{x}/{y}.png?key={apiKey}"
+  }
+}
+```
 ---
 
 Enjoy using WPlaceViewer!
