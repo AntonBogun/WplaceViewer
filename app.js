@@ -1081,22 +1081,34 @@ function initializeMap(lastLocation) {
         osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors',
             maxZoom: 19,
-            noWrap: false
+            noWrap: false,
+            headers: {
+            'User-Agent': 'wplace-viewer/1.0 (your-email@example.com)'
+            }
         }),
         satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
             attribution: '© Esri, Maxar, Earthstar Geographics',
             maxZoom: 18,
-            noWrap: false
+            noWrap: false,
+            headers: {
+            'User-Agent': 'wplace-viewer/1.0 (your-email@example.com)'
+            }
         }),
         topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenTopoMap contributors',
             maxZoom: 17,
-            noWrap: false
+            noWrap: false,
+            headers: {
+            'User-Agent': 'wplace-viewer/1.0 (your-email@example.com)'
+            }
         }),
         dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
             attribution: '© CARTO, © OpenStreetMap contributors',
             maxZoom: 19,
-            noWrap: false
+            noWrap: false,
+            headers: {
+            'User-Agent': 'wplace-viewer/1.0 (your-email@example.com)'
+            }
         })
     };
 
