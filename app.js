@@ -8,6 +8,10 @@ let selectionHighlight = null;
 
 let appPath = null;
 
+let overlayState = 'none'; // 'none', 'following'
+let overlayImage = null;
+let mouseOverlay = null; // DOM element for mouse following
+
 async function getAppPath() {
   if (!appPath) {
     appPath = await window.electronAPI.getAppPath();
@@ -1579,6 +1583,140 @@ function setupControls() {
             }, 10);
         }
     });
+
+    // Image overlay controls
+    const imageUpload = document.getElementById('imageUpload');
+    const clearOverlayBtn = document.getElementById('clearOverlay');
+
+    imageUpload.addEventListener('change', handleImageUpload);
+    clearOverlayBtn.addEventListener('click', clearOverlay);
+}
+
+function handleImageUpload(event) {
+    console.log('Upload triggered, event:', event);
+    const file = event.target.files[0];
+    console.log('Selected file:', file);
+    if (!file){
+        console.log('No file selected');
+        return;
+    }
+    console.log('File details:', file.name, file.size, file.type);
+    // Clear any existing overlay first
+    clearOverlay();
+    
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        processOverlayImage(e.target.result);
+    };
+    
+    reader.readAsDataURL(file);
+}
+
+function processOverlayImage(dataUrl) {
+    const img = new Image();
+    img.onload = function() {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        
+        // Draw original image
+        ctx.drawImage(img, 0, 0);
+        
+        // Get image data and create red mask from opaque pixels
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        
+        for (let i = 0; i < data.length; i += 4) {
+            const alpha = data[i + 3];
+            if (alpha > 0) {
+                // Make opaque pixels red with semi-transparency
+                data[i] = 255;     // Red
+                data[i + 1] = 0;   // Green
+                data[i + 2] = 0;   // Blue
+                data[i + 3] = 128; // Semi-transparent
+            }
+        }
+        
+        ctx.putImageData(imageData, 0, 0);
+        overlayImage = {
+            dataUrl: canvas.toDataURL(),
+            width: img.width,
+            height: img.height
+        };
+
+        overlayState = 'following';
+        mouseOverlay = document.getElementById('mouseOverlay');
+        mouseOverlay.style.display = 'block';
+        mouseOverlay.innerHTML = `<img src="${overlayImage.dataUrl}" style="width: 100%; height: 100%;">`;
+
+        
+        updateOverlayScale();
+        centerOverlay();
+        document.getElementById('clearOverlay').disabled = false;
+        updateStatus('Overlay following center of screen');
+    };
+    img.src = dataUrl;
+}
+
+function centerOverlay() {
+    if (overlayState !== 'following' || !mouseOverlay) return;
+    
+    // Get map container dimensions
+    const mapRect = map.getContainer().getBoundingClientRect();
+    const centerX = mapRect.width / 2;
+    const centerY = mapRect.height / 2;
+    
+    // Center overlay
+    const offsetX = parseFloat(mouseOverlay.style.width) / 2;
+    const offsetY = parseFloat(mouseOverlay.style.height) / 2;
+    
+    mouseOverlay.style.left = (centerX - offsetX) + 'px';
+    mouseOverlay.style.top = (centerY - offsetY) + 'px';
+}
+
+function updateOverlayScale() {
+    if (overlayState !== 'following' || !overlayImage) return;
+    
+    // Scale based on current zoom - adjust multiplier as needed
+    const pixelSize = calculatePixelSizeOnScreen();
+    const scaleFactor = pixelSize; // Adjust this multiplier to control size
+    
+    const scaledWidth = overlayImage.width * scaleFactor;
+    const scaledHeight = overlayImage.height * scaleFactor;
+    
+    mouseOverlay.style.width = scaledWidth + 'px';
+    mouseOverlay.style.height = scaledHeight + 'px';
+}
+
+function updateMouseOverlayPosition(e) {
+    if (overlayState !== 'following' || !mouseOverlay) return;
+    
+    // Get mouse position relative to map container
+    const mapRect = map.getContainer().getBoundingClientRect();
+    const x = e.clientX - mapRect.left;
+    const y = e.clientY - mapRect.top;
+    
+    // Center overlay on mouse cursor
+    const offsetX = parseFloat(mouseOverlay.style.width) / 2;
+    const offsetY = parseFloat(mouseOverlay.style.height) / 2;
+    
+    mouseOverlay.style.left = (x - offsetX) + 'px';
+    mouseOverlay.style.top = (y - offsetY) + 'px';
+}
+
+function clearOverlay() {
+    // Clear mouse following overlay
+    if (mouseOverlay) {
+        mouseOverlay.style.display = 'none';
+    }
+    
+    // Reset state
+    overlayState = 'none';
+    overlayImage = null;
+    document.getElementById('clearOverlay').disabled = true;
+    document.getElementById('imageUpload').value = '';
+    updateStatus('Overlay cleared');
 }
 
 
@@ -2068,9 +2206,13 @@ function setupEventListeners() {
         loadAllFavorites();
         queueTileDownloads();
         throttledSaveLocation();
+        updateOverlayScale();
+        centerOverlay();
     });
     
-    map.on('mousemove', updateMouseInfo);
+    map.on('mousemove', function(e) {
+    updateMouseInfo(e);
+});
     
     // Handle map clicks for pixel selection
     map.on('click', function(e) {

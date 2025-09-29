@@ -131,6 +131,13 @@
 </head>
 <body>
     <div id="map"></div>
+    <div id="mouseOverlay" style="
+        position: absolute;
+        pointer-events: none;
+        z-index: 999;
+        display: none;
+        opacity: 0.7;
+    "></div>
     
     <div class="controls">
         <h3>Map Controls</h3>
@@ -192,6 +199,11 @@
                 Tiles: 1024,1024 or 1024,1024,500,300<br>
                 Coords: 47.36&4.65 or 47.36&4.65&10
             </div>
+        </div>
+        <div class="control-group">
+            <label for="imageUpload">Upload Overlay Image:</label>
+            <input type="file" id="imageUpload" accept="image/*">
+            <button id="clearOverlay" disabled>Clear Overlay</button>
         </div>
     </div>
 
